@@ -38,6 +38,8 @@ info:
 	@echo "  make sim            Run all simulations"
 	@echo "  make sim-verilator  Run Verilator simulations"
 	@echo "  make sim-icarus     Run Icarus Verilog simulations"
+	@echo "  make synth          Run synthesis (Yosys)"
+	@echo "  make synth-stats    Show synthesis statistics"
 	@echo "  make verify         Run all verification"
 	@echo "  make lint           Lint all RTL"
 	@echo "  make clean          Remove build artifacts"
@@ -98,6 +100,22 @@ verify: directories
 lint: directories
 	@echo "Linting RTL..."
 	@$(VERILATOR) --lint-only -Wall $(RTL_DIR)/fpu/*.sv $(RTL_DIR)/cpu/*.sv 2>/dev/null || echo "  (Verilator lint not yet configured)"
+
+# Synthesis
+# ==========
+SYNTH_DIR := build/synth
+SYNTH_SCRIPT := scripts/syn_lucid.tcl
+
+.PHONY: synth
+synth: directories
+	@mkdir -p $(SYNTH_DIR)
+	@echo "Running Yosys synthesis..."
+	$(YOSYS) -c $(SYNTH_SCRIPT) 2>&1 | tee $(SYNTH_DIR)/synth.log || echo "  (Yosys not available)"
+
+.PHONY: synth-stats
+synth-stats: synth
+	@echo "=== Synthesis Statistics ==="
+	@grep -E "(Number of|LUT|FF|BRAM|DSP|Estimated)" $(SYNTH_DIR)/synth.log 2>/dev/null || echo "  (statistics not found)"
 
 # Clean
 .PHONY: clean

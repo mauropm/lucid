@@ -29,8 +29,7 @@ module boot_rom (
 
     bram #(
         .ADDR_WIDTH(ADDR_WIDTH),
-        .DATA_WIDTH(32),
-        .HEX_FILE("simulation/icarus/boot_rom.hex")
+        .DATA_WIDTH(32)
     ) rom (
         .clk(clk),
         .en(wb_cyc && wb_stb),

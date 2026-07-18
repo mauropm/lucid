@@ -3,9 +3,8 @@
 // 1-cycle read latency. Initialize from hex file via $readmemh.
 
 module bram #(
-    parameter int ADDR_WIDTH = 10,  // 2^ADDR_WIDTH words
-    parameter int DATA_WIDTH = 32,
-    parameter string HEX_FILE = ""
+    parameter ADDR_WIDTH = 10,  // 2^ADDR_WIDTH words
+    parameter DATA_WIDTH = 32
 ) (
     input  logic                clk,
     input  logic                en,
@@ -15,16 +14,9 @@ module bram #(
     output logic [DATA_WIDTH-1:0] dout
 );
 
-    localparam int DEPTH = 2 ** ADDR_WIDTH;
+    localparam DEPTH = 2 ** ADDR_WIDTH;
 
     logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];
-
-    // Initialize from hex file if provided
-    initial begin
-        if (HEX_FILE != "") begin
-            $readmemh(HEX_FILE, mem);
-        end
-    end
 
     always_ff @(posedge clk) begin
         if (en) begin
