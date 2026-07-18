@@ -128,12 +128,16 @@ module graph_scheduler_parallel #(
             start_pulse <= 1'b0;
 
             if (reg_cyc && reg_stb && reg_we) begin
-                case (reg_adr[5:2])
-                    4'd0: begin ctrl <= reg_dat_w; if (reg_dat_w[0]) start_pulse <= 1'b1; end
-                    4'd2: root_id  <= reg_dat_w;
-                    4'd3: node_cnt <= reg_dat_w;
-                    default: ;
-                endcase
+                // Control registers (only when NOT writing to node fields)
+                if (reg_adr[7:0] < 8'h20) begin
+                    case (reg_adr[5:2])
+                        4'd0: begin ctrl <= reg_dat_w; if (reg_dat_w[0]) start_pulse <= 1'b1; end
+                        4'd2: root_id  <= reg_dat_w;
+                        4'd3: node_cnt <= reg_dat_w;
+                        default: ;
+                    endcase
+                end
+                // Node field write (address >= 0x20)
                 if (reg_adr[7:0] >= 8'h20) begin
                     tmp_nid = (reg_adr[7:2] - 6'd8) / 6;
                     tmp_fid = (reg_adr[7:2] - 6'd8) % 6;
@@ -214,8 +218,13 @@ module graph_scheduler_parallel #(
                         upd_mask <= node_dep[pop_id];
                         state <= S_UPD;
                     end else begin
-                        if (node_state[root_id] == 2'b11) state <= S_DONE;
-                        else state <= S_DONE;
+                        // Queue empty - check if done or need to wait
+                        if (node_state[root_id] == 2'b11)
+                            state <= S_DONE;
+                        else if (done_cnt >= node_cnt)
+                            state <= S_DONE;
+                        else
+                            state <= S_EXEC; // Wait for more work
                     end
                 end
 

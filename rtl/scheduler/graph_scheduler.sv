@@ -105,15 +105,18 @@ module graph_scheduler #(
 
             // CPU register writes
             if (reg_cyc && reg_stb && reg_we) begin
-                case (reg_adr[5:2])
-                    4'd0: begin
-                        ctrl <= reg_dat_w;
-                        if (reg_dat_w[0]) start_pulse <= 1'b1;
-                    end
-                    4'd2: root_id  <= reg_dat_w;
-                    4'd3: node_cnt <= reg_dat_w;
-                    default: ;
-                endcase
+                // Control registers (only when NOT writing to node fields)
+                if (reg_adr[7:0] < 8'h20) begin
+                    case (reg_adr[5:2])
+                        4'd0: begin
+                            ctrl <= reg_dat_w;
+                            if (reg_dat_w[0]) start_pulse <= 1'b1;
+                        end
+                        4'd2: root_id  <= reg_dat_w;
+                        4'd3: node_cnt <= reg_dat_w;
+                        default: ;
+                    endcase
+                end
                 // Node field write (address >= 0x20)
                 if (reg_adr[7:0] >= 8'h20) begin
                     tmp_nid = (reg_adr[7:2] - 6'd8) / 6;
