@@ -73,7 +73,7 @@ sim-verilator: directories
 		echo "Running $$f..."; \
 	done
 
-RTL_SRCS := $(shell find rtl -name '*.sv' -not -path 'rtl/bus/*' 2>/dev/null)
+RTL_SRCS := $(shell find rtl -name '*.sv' 2>/dev/null)
 
 .PHONY: sim-icarus
 sim-icarus: directories

@@ -1,0 +1,28 @@
+// Boot ROM test program (RV32I)
+// Tests: registers, ALU, load/store, UART
+//
+// 0x00000000: addi x1, x0, 42      # x1 = 42
+// 0x00000004: addi x2, x1, 1       # x2 = 43
+// 0x00000008: nop
+// 0x0000000C: lui x3, 0x00010      # x3 = 0x00010000 (mgmt RAM base)
+// 0x00000010: sw x1, 0(x3)         # mem[0x10000] = 42
+// 0x00000014: lw x4, 0(x3)         # x4 = 42
+// 0x00000018: addi x5, x4, 58      # x5 = 100 = 'd'
+// 0x0000001C: lui x6, 0x00020      # x6 = 0x00020000 (UART base)
+// 0x00000020: addi x7, x0, 1       # x7 = 1
+// 0x00000024: sw x7, 0(x6)         # UART_CTRL = 1 (enable UART @ offset 0x00)
+// 0x00000028: sw x5, 0x0C(x6)      # UART_TX_DATA = 'd' (@ offset 0x0C)
+// 0x0000002C: jal x0, 0            # loop forever
+@00000000
+02A00093
+00108113
+00000013
+000101B7
+0011A023
+0001A203
+03A20293
+00020337
+00100393
+00732023
+00532623
+0000006F

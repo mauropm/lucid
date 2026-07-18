@@ -1,92 +1,78 @@
-// Lucid Wishbone Bus (Wishbone B4)
-// ================================
-// Shared bus connecting Management CPU, FPU, and peripherals.
-//
-// Implements Wishbone B4 pipelined mode.
+// Wishbone B4 Bus Matrix (assign-only)
+// =====================================
+// 1 master, 3 slaves. Classic Wishbone handshake.
+// Uses only assign statements for Icarus compatibility.
 
 module wishbone_bus #(
-    parameter int NUM_MASTERS = 2,
-    parameter int NUM_SLAVES  = 8
+    parameter int NUM_SLAVES = 3
 ) (
-    input  logic clk,
-    input  logic reset_n,
+    input  logic        clk,
+    input  logic        reset_n,
 
-    // Master interfaces
-    wishbone_interface.master masters [NUM_MASTERS],
+    // Master
+    input  logic        m_cyc,
+    input  logic        m_stb,
+    input  logic        m_we,
+    input  logic [31:0] m_adr,
+    input  logic [31:0] m_dat_w,
+    input  logic [3:0]  m_sel,
+    output logic [31:0] m_dat_r,
+    output logic        m_ack,
 
-    // Slave interfaces
-    wishbone_interface.slave  slaves [NUM_SLAVES]
+    // Slave 0
+    output logic        s0_cyc, s0_stb,
+    output logic [31:0] s0_adr,
+    input  logic [31:0] s0_dat_r,
+    input  logic        s0_ack,
+
+    // Slave 1
+    output logic        s1_cyc, s1_stb, s1_we,
+    output logic [31:0] s1_adr, s1_dat_w,
+    output logic [3:0]  s1_sel,
+    input  logic [31:0] s1_dat_r,
+    input  logic        s1_ack,
+
+    // Slave 2
+    output logic        s2_cyc, s2_stb, s2_we,
+    output logic [31:0] s2_adr, s2_dat_w,
+    output logic [3:0]  s2_sel,
+    input  logic [31:0] s2_dat_r,
+    input  logic        s2_ack
 );
 
-    // Address decoding
-    logic [NUM_SLAVES-1:0] slave_select;
+    // Address decode
+    wire [2:0] slave_sel;
+    assign slave_sel[0] = (m_adr[31:16] == 16'h0000);
+    assign slave_sel[1] = (m_adr[31:16] == 16'h0001);
+    assign slave_sel[2] = (m_adr[31:16] == 16'h0002);
 
-    // Simplified arbitration: fixed priority (master 0 > master 1)
-    logic [NUM_MASTERS-1:0] grant;
-    logic [NUM_MASTERS-1:0] request;
+    // Slave 0: Boot ROM (read-only)
+    assign s0_cyc = m_cyc && slave_sel[0];
+    assign s0_stb = m_stb && slave_sel[0];
+    assign s0_adr = m_adr;
 
-    genvar i;
-    generate
-        for (i = 0; i < NUM_MASTERS; i++) begin : gen_arb
-            assign request[i] = masters[i].cyc && masters[i].stb;
-        end
-    endgenerate
+    // Slave 1: Management RAM
+    assign s1_cyc   = m_cyc && slave_sel[1];
+    assign s1_stb   = m_stb && slave_sel[1];
+    assign s1_we    = m_we;
+    assign s1_adr   = m_adr;
+    assign s1_dat_w = m_dat_w;
+    assign s1_sel   = m_sel;
 
-    // Fixed priority arbiter
-    always_comb begin
-        grant = '0;
-        if (request[0]) grant[0] = 1'b1;
-        else if (request[1]) grant[1] = 1'b1;
-    end
+    // Slave 2: UART
+    assign s2_cyc   = m_cyc && slave_sel[2];
+    assign s2_stb   = m_stb && slave_sel[2];
+    assign s2_we    = m_we;
+    assign s2_adr   = m_adr;
+    assign s2_dat_w = m_dat_w;
+    assign s2_sel   = m_sel;
 
-    // Address decoding (simple example)
-    // Slave 0: 0x00000000 - 0x000FFFFF (Boot ROM, Management RAM, peripherals)
-    // Slave 1: 0x00100000 - 0x001FFFFF (FPU control)
-    // Slave 2: 0x00200000 - 0x002FFFFF (Graph memory)
-    // Slave 3: 0x00300000 - 0x003FFFFF (FPU Heap)
-    // Slave 4: 0x00400000 - 0x004FFFFF (GC Scratch)
-    // etc.
-
-    wire [31:0] active_addr;
-    assign active_addr = grant[0] ? masters[0].adr : masters[1].adr;
-
-    always_comb begin
-        slave_select = '0;
-        if (active_addr[31:20] == 12'h000) slave_select[0] = 1'b1;
-        else if (active_addr[31:20] == 12'h001) slave_select[1] = 1'b1;
-        else if (active_addr[31:20] == 12'h002) slave_select[2] = 1'b1;
-        else if (active_addr[31:20] == 12'h003) slave_select[3] = 1'b1;
-        else if (active_addr[31:20] == 12'h004) slave_select[4] = 1'b1;
-    end
-
-    // Bus signal routing
-    generate
-        for (i = 0; i < NUM_SLAVES; i++) begin : gen_slave_mux
-            assign slaves[i].cyc = |grant && slave_select[i];
-            assign slaves[i].stb = |grant && slave_select[i];
-            assign slaves[i].adr = active_addr;
-            assign slaves[i].dat_i = grant[0] ? masters[0].dat_o : masters[1].dat_o;
-            assign slaves[i].we = grant[0] ? masters[0].we : masters[1].we;
-            assign slaves[i].sel = grant[0] ? masters[0].sel : masters[1].sel;
-        end
-    endgenerate
-
-    // Master read data mux
-    generate
-        for (i = 0; i < NUM_MASTERS; i++) begin : gen_master_dat
-            always_comb begin
-                masters[i].dat_i = '0;
-                masters[i].ack = 1'b0;
-                masters[i].err = 1'b0;
-                for (int j = 0; j < NUM_SLAVES; j++) begin
-                    if (slave_select[j] && grant[i]) begin
-                        masters[i].dat_i = slaves[j].dat_o;
-                        masters[i].ack = slaves[j].ack;
-                        masters[i].err = slaves[j].err;
-                    end
-                end
-            end
-        end
-    endgenerate
+    // Read data and acknowledge mux
+    assign m_dat_r = slave_sel[0] ? s0_dat_r :
+                     slave_sel[1] ? s1_dat_r :
+                     slave_sel[2] ? s2_dat_r : 32'h0;
+    assign m_ack   = slave_sel[0] ? s0_ack :
+                     slave_sel[1] ? s1_ack :
+                     slave_sel[2] ? s2_ack : 1'b0;
 
 endmodule
