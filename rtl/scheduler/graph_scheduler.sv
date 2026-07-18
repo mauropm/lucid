@@ -41,6 +41,7 @@ module graph_scheduler #(
     logic [31:0] node_dep    [0:NUM_NODES-1];
     logic [31:0] node_op0    [0:NUM_NODES-1]; // operand values from inputs
     logic [31:0] node_op1    [0:NUM_NODES-1];
+    logic [31:0] node_op2    [0:NUM_NODES-1];
 
     // ============================================================
     // Ready queue (FIFO of node IDs)
@@ -99,6 +100,7 @@ module graph_scheduler #(
                 node_dep[i]    <= 32'd0;
                 node_op0[i]    <= 32'd0;
                 node_op1[i]    <= 32'd0;
+                node_op2[i]    <= 32'd0;
             end
         end else begin
             start_pulse <= 1'b0;
@@ -223,12 +225,20 @@ module graph_scheduler #(
                 S_RESULT: begin
                     tmp_nid = exec_id;
                     case (node_opcode[tmp_nid])
-                        8'h01: node_result[tmp_nid] <= node_imm0[tmp_nid];           // LIT_INT
-                        8'h02: node_result[tmp_nid] <= node_flags[tmp_nid][0];       // LIT_BOOL
-                        8'h10: node_result[tmp_nid] <= node_op0[tmp_nid] + node_op1[tmp_nid]; // ADD
-                        8'h11: node_result[tmp_nid] <= node_op0[tmp_nid] - node_op1[tmp_nid]; // SUB
-                        8'h12: node_result[tmp_nid] <= node_op0[tmp_nid] * node_op1[tmp_nid]; // MUL
-                        default: node_result[tmp_nid] <= node_imm0[tmp_nid];
+                8'h01: node_result[tmp_nid] <= node_imm0[tmp_nid];           // LIT_INT
+                8'h02: node_result[tmp_nid] <= node_flags[tmp_nid][0];       // LIT_BOOL
+                8'h10: node_result[tmp_nid] <= node_op0[tmp_nid] + node_op1[tmp_nid]; // ADD
+                8'h11: node_result[tmp_nid] <= node_op0[tmp_nid] - node_op1[tmp_nid]; // SUB
+                8'h12: node_result[tmp_nid] <= node_op0[tmp_nid] * node_op1[tmp_nid]; // MUL
+                8'h13: node_result[tmp_nid] <= node_op1[tmp_nid] != 0 ? node_op0[tmp_nid] / node_op1[tmp_nid] : 32'd0; // DIV
+                8'h14: node_result[tmp_nid] <= node_op1[tmp_nid] != 0 ? node_op0[tmp_nid] % node_op1[tmp_nid] : 32'd0; // MOD
+                8'h15: node_result[tmp_nid] <= {31'h0, node_op0[tmp_nid] == node_op1[tmp_nid]}; // EQ
+                8'h16: node_result[tmp_nid] <= {31'h0, $signed(node_op0[tmp_nid]) < $signed(node_op1[tmp_nid])}; // LT
+                8'h17: node_result[tmp_nid] <= {31'h0, $signed(node_op0[tmp_nid]) > $signed(node_op1[tmp_nid])}; // GT
+                8'h18: node_result[tmp_nid] <= {31'h0, $signed(node_op0[tmp_nid]) <= $signed(node_op1[tmp_nid])}; // LE
+                8'h19: node_result[tmp_nid] <= {31'h0, $signed(node_op0[tmp_nid]) >= $signed(node_op1[tmp_nid])}; // GE
+                8'h30: node_result[tmp_nid] <= node_op0[tmp_nid] != 0 ? node_op1[tmp_nid] : node_op2[tmp_nid]; // IF
+                default: node_result[tmp_nid] <= node_imm0[tmp_nid];
                     endcase
                     node_state[tmp_nid] <= 2'b11; // DONE
                     done_cnt <= done_cnt + 1'b1;
@@ -289,6 +299,8 @@ module graph_scheduler #(
                             node_op0[tmp_d] <= node_result[exec_id];
                         end else if (node_rdyinp[tmp_d] == 1) begin
                             node_op1[tmp_d] <= node_result[exec_id];
+                        end else if (node_rdyinp[tmp_d] == 2) begin
+                            node_op2[tmp_d] <= node_result[exec_id];
                         end
                         node_rdyinp[tmp_d] <= node_rdyinp[tmp_d] + 1'b1;
                         if (node_rdyinp[tmp_d] + 1 >= node_numinp[tmp_d]) begin
