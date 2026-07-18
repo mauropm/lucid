@@ -1,0 +1,49 @@
+name: Lucid CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Verilator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y verilator
+      - name: Lint RTL
+        run: make lint
+
+  sim-icarus:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Icarus Verilog
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iverilog
+      - name: Run Icarus simulations
+        run: make sim-icarus
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check document structure
+        run: |
+          echo "Checking document structure..."
+          test -f docs/architecture/architecture-guide.md
+          test -f docs/architecture/developer-guide.md
+          test -f docs/architecture/lucid-ir-spec.md
+          test -f docs/architecture/memory-map.md
+          test -f docs/architecture/object-model.md
+          test -f docs/architecture/message-protocol.md
+          test -f docs/architecture/scheduler-spec.md
+          test -f docs/architecture/coding-standards.md
+          test -f docs/CONTRIBUTING.md
+          test -f docs/roadmap.md
+          echo "All documents present."
