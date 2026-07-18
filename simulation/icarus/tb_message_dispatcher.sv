@@ -16,6 +16,8 @@ module tb_message_dispatcher;
     logic [NUM_MODULES-1:0] rx_valid, rx_last, rx_ready;
     logic [NUM_MODULES*32-1:0] rx_data;
 
+    int fail_count;
+
     message_dispatcher #(
         .NUM_MODULES(NUM_MODULES),
         .ROUTER_INPUTS(NUM_MODULES),
@@ -42,6 +44,7 @@ module tb_message_dispatcher;
             tx_valid[i] = 0; tx_last[i] = 0;
             tx_data[i*32 +: 32] = 0; rx_ready[i] = 0;
         end
+        fail_count = 0;
         #10 reset_n = 1;
         @(posedge clk);
 
@@ -64,7 +67,7 @@ module tb_message_dispatcher;
             @(posedge clk);
             rx_ready[1] <= 0;
         end else begin
-            $error("Module 1 did not receive message");
+            fail_count++;
         end
 
         // Test: Send from module 2 to module 0
@@ -84,10 +87,9 @@ module tb_message_dispatcher;
             @(posedge clk);
             rx_ready[0] <= 0;
         end else begin
-            $error("Module 0 did not receive message");
+            fail_count++;
         end
 
-        $display("PASS: tb_message_dispatcher");
-        $finish;
+        if (fail_count == 0) begin $display("PASS: tb_message_dispatcher"); $finish(0); end else begin $display("FAIL: tb_message_dispatcher (%0d failures)", fail_count); $finish(1); end
     end
 endmodule

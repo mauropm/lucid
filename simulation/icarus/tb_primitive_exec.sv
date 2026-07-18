@@ -29,7 +29,9 @@ module tb_primitive_exec;
     logic [31:0] exec_rx_data;
 
     // Scheduler with message dispatch
-    graph_scheduler_fp #(.NUM_NODES(64), .Q_DEPTH(16)) sched (
+    int fail_count;
+
+    graph_scheduler_fp #(.NUM_NODES(64), .Q_DEPTH(64)) sched (
         .clk(clk), .reset_n(reset_n),
         .reg_cyc(reg_cyc), .reg_stb(reg_stb), .reg_we(reg_we),
         .reg_adr(reg_adr), .reg_dat_w(reg_dat_w),
@@ -90,6 +92,7 @@ module tb_primitive_exec;
 
         clk = 0; reset_n = 0;
         reg_cyc = 0; reg_stb = 0; reg_we = 0; reg_adr = 0; reg_dat_w = 0;
+        fail_count = 0;
         #15 reset_n = 1;
         @(posedge clk);
 
@@ -110,6 +113,7 @@ module tb_primitive_exec;
         // Node 2: ADD, num_inputs=2, no dependents (root)
         node_write(2, 0, encode_header(2'b00, 8'h10, 6'd2, 6'd0, 10'd0));
         node_write(2, 4, 32'd0);
+        node_write(2, 5, 32'h00000001);
         $display("  Node 2: ADD (root)");
 
         reg_write(32'h08, 32'd2);  // root = 2
@@ -128,7 +132,7 @@ module tb_primitive_exec;
         if (sched.node_result[2] == 32'd5) begin
             $display("  Node 2 (ADD) = %0d: PASS", sched.node_result[2]);
         end else begin
-            $error("  Node 2 (ADD) = %0d, expected 5", sched.node_result[2]);
+            fail_count++;
         end
 
         // Test 2: MUL 3 × 4 = 12
@@ -153,6 +157,7 @@ module tb_primitive_exec;
         // Node 2: MUL (0x12), num_inputs=2
         node_write(2, 0, encode_header(2'b00, 8'h12, 6'd2, 6'd0, 10'd0));
         node_write(2, 4, 32'd0);
+        node_write(2, 5, 32'h00000001);
 
         reg_write(32'h08, 32'd2);  // root = 2
         reg_write(32'h0C, 32'd3);  // node_count = 3
@@ -163,7 +168,7 @@ module tb_primitive_exec;
         if (sched.node_result[2] == 32'd12) begin
             $display("  Node 2 (MUL) = %0d: PASS", sched.node_result[2]);
         end else begin
-            $error("  Node 2 (MUL) = %0d, expected 12", sched.node_result[2]);
+            fail_count++;
         end
 
         // Test 3: LT comparison (3 < 5)
@@ -185,6 +190,7 @@ module tb_primitive_exec;
         node_write(1, 4, 32'h00000004);
         node_write(2, 0, encode_header(2'b00, 8'h16, 6'd2, 6'd0, 10'd0)); // LT
         node_write(2, 4, 32'd0);
+        node_write(2, 5, 32'h00000001);
 
         reg_write(32'h08, 32'd2);
         reg_write(32'h0C, 32'd3);
@@ -195,12 +201,11 @@ module tb_primitive_exec;
         if (sched.node_result[2] == 32'd1) begin
             $display("  Node 2 (LT) = true (1): PASS");
         end else begin
-            $error("  Node 2 (LT) = %0d, expected 1", sched.node_result[2]);
+            fail_count++;
         end
 
         $display("");
-        $display("PASS: tb_primitive_exec");
-        $finish;
+        if (fail_count == 0) begin $display("PASS: tb_primitive_exec"); $finish(0); end else begin $display("FAIL: tb_primitive_exec (%0d failures)", fail_count); $finish(1); end
     end
 
 endmodule

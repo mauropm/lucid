@@ -32,6 +32,7 @@ module tb_message_system;
     always #5 clk = ~clk;
 
     logic [31:0] hdr;
+    int fail_count;
 
     task automatic send_single(input int src, input logic [7:0] dest,
                                input logic [7:0] msg_type, input logic [31:0] payload);
@@ -68,6 +69,7 @@ module tb_message_system;
             tx_valid[i] = 0; tx_last[i] = 0;
             tx_data[i*32 +: 32] = 0; rx_ready[i] = 0;
         end
+        fail_count = 0;
         #15 reset_n = 1;
         @(posedge clk);
 
@@ -75,36 +77,36 @@ module tb_message_system;
         $display("=== Test 1: 0→1 ===");
         send_single(0, 8'd1, MSG_NOP, 32'hCAFEBABE);
         expect_single(1, hdr);
-        if (get_dest(hdr) != 8'd1) $error("Dest should be 1, got %0d", get_dest(hdr));
-        if (get_src(hdr) != 8'd0) $error("Src should be 0, got %0d", get_src(hdr));
-        if (get_type(hdr) != MSG_NOP) $error("Type should be NOP, got %0d", get_type(hdr));
+        if (get_dest(hdr) != 8'd1) fail_count++;
+        if (get_src(hdr) != 8'd0) fail_count++;
+        if (get_type(hdr) != MSG_NOP) fail_count++;
         $display("  PASS: header=0x%08X", hdr);
 
         // Test 2: Module 1 → Module 2
         $display("=== Test 2: 1→2 ===");
         send_single(1, 8'd2, MSG_ALLOC, 32'h00000040);
         expect_single(2, hdr);
-        if (get_dest(hdr) != 8'd2) $error("Dest should be 2");
-        if (get_src(hdr) != 8'd1) $error("Src should be 1");
-        if (get_type(hdr) != MSG_ALLOC) $error("Type should be ALLOC");
+        if (get_dest(hdr) != 8'd2) fail_count++;
+        if (get_src(hdr) != 8'd1) fail_count++;
+        if (get_type(hdr) != MSG_ALLOC) fail_count++;
         $display("  PASS: header=0x%08X", hdr);
 
         // Test 3: Module 3 → Module 0 (wrap-around)
         $display("=== Test 3: 3→0 ===");
         send_single(3, 8'd0, MSG_EXEC_PRIM, 32'h12345678);
         expect_single(0, hdr);
-        if (get_src(hdr) != 8'd3) $error("Src should be 3");
-        if (get_dest(hdr) != 8'd0) $error("Dest should be 0");
+        if (get_src(hdr) != 8'd3) fail_count++;
+        if (get_dest(hdr) != 8'd0) fail_count++;
         $display("  PASS: header=0x%08X", hdr);
 
         // Test 4: Sequential send/receive same path 0→1
         $display("=== Test 4: Sequential 0→1 ===");
         send_single(0, 8'd1, MSG_NOP, 32'h10000000);
         expect_single(1, hdr);
-        if (get_src(hdr) != 0) $error("Src should be 0");
+        if (get_src(hdr) != 0) fail_count++;
         send_single(0, 8'd1, MSG_NOP, 32'h20000000);
         expect_single(1, hdr);
-        if (get_src(hdr) != 0) $error("Src should be 0");
+        if (get_src(hdr) != 0) fail_count++;
         $display("  PASS: two messages");
 
         // Test 5: Cross traffic 0→1 and 2→3
@@ -116,8 +118,7 @@ module tb_message_system;
         $display("  PASS");
 
         $display("");
-        $display("PASS: tb_message_system");
-        $finish;
+        if (fail_count == 0) begin $display("PASS: tb_message_system"); $finish(0); end else begin $display("FAIL: tb_message_system (%0d failures)", fail_count); $finish(1); end
     end
 
 endmodule

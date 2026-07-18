@@ -35,6 +35,7 @@ module tb_gc;
 
     logic [31:0] p;
     int alloc_count;
+    int fail_count;
 
     initial begin
         $dumpfile("build/sim/tb_gc.vcd");
@@ -44,6 +45,7 @@ module tb_gc;
         alloc_valid = 0; alloc_tag = 0; alloc_flags = 0; alloc_size = 0;
         gc_trigger = 0;
         gc_done = 0;
+        fail_count = 0;
         #15 reset_n = 1;
         @(posedge clk);
 
@@ -69,7 +71,7 @@ module tb_gc;
         @(posedge clk);
         $display("  GC busy: %0d (expected 1)", gc_busy);
         if (gc_busy) $display("  GC started: PASS");
-        else $error("  GC should be busy");
+        else fail_count++;
         // Simulate GC completion
         gc_done <= 1;
         @(posedge clk);
@@ -105,10 +107,9 @@ module tb_gc;
         do_alloc(8'h01, 16'd8, p);
         $display("  Alloc during GC: ptr=0x%08X, OOM=%0d", p, alloc_oom);
         if (p == 32'd0) $display("  OOM blocks allocation: PASS");
-        else $error("  Allocation should be blocked during GC");
+        else fail_count++;
 
         $display("");
-        $display("PASS: tb_gc");
-        $finish;
+        if (fail_count == 0) begin $display("PASS: tb_gc"); $finish(0); end else begin $display("FAIL: tb_gc (%0d failures)", fail_count); $finish(1); end
     end
 endmodule

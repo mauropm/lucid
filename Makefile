@@ -71,20 +71,20 @@ sim: sim-verilator sim-icarus
 
 .PHONY: sim-verilator
 sim-verilator: directories
-	@for f in $(SIM_DIR)/verilator/*.cpp; do \
-		echo "Running $$f..."; \
-	done
+	@echo "Verilator simulation not yet configured."
 
 RTL_SRCS := $(shell find rtl -name '*.sv' 2>/dev/null)
 
 .PHONY: sim-icarus
 sim-icarus: directories
-	@for tb in $(SIM_DIR)/icarus/*.sv; do \
+	@fail=0; \
+	for tb in $(SIM_DIR)/icarus/*.sv; do \
 		name=$$(basename $$tb .sv); \
 		echo "=== $$name ==="; \
-		$(ICARUS) -g2012 -o $(BUILD_DIR)/sim/$$name.vvp $(RTL_SRCS) $$tb && \
-		vvp $(BUILD_DIR)/sim/$$name.vvp; \
-	done
+		$(ICARUS) -g2012 -o $(BUILD_DIR)/sim/$$name.vvp $(RTL_SRCS) $$tb || { fail=1; echo "ELABORATION FAILED: $$name"; continue; }; \
+		vvp $(BUILD_DIR)/sim/$$name.vvp || { fail=1; echo "SIMULATION FAILED: $$name"; }; \
+	done; \
+	exit $$fail
 
 # Verification
 .PHONY: verify
@@ -95,11 +95,12 @@ verify: directories
 		$(PYTHON) $$f 2>/dev/null || echo "  (skipped)"; \
 	done
 
-# Lint
+# Lint - H18: Full RTL tree, real exit status
 .PHONY: lint
 lint: directories
 	@echo "Linting RTL..."
-	@$(VERILATOR) --lint-only -Wall $(RTL_DIR)/fpu/*.sv $(RTL_DIR)/cpu/*.sv 2>/dev/null || echo "  (Verilator lint not yet configured)"
+	@$(VERILATOR) --lint-only -Wall $(RTL_DIR)/messages/message_types.sv $(RTL_SRCS) 2>&1; \
+	exit $$?
 
 # Synthesis
 # ==========

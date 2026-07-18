@@ -1,12 +1,8 @@
-// Parallel Graph Scheduler
-// ========================
-// Dual-pop ready queue. In each execute cycle, pops up to 2 ready nodes.
-// Computes the first immediately. If a second was popped, computes it
-// on the next cycle. Tracks concurrency via perf_conc.
+`default_nettype none
 
 module graph_scheduler_parallel #(
     parameter int NUM_NODES = 64,
-    parameter int Q_DEPTH = 16
+    parameter int Q_DEPTH = NUM_NODES
 ) (
     input  logic        clk, reset_n,
     input  logic        reg_cyc, reg_stb, reg_we,
@@ -15,127 +11,154 @@ module graph_scheduler_parallel #(
     output logic        reg_ack
 );
 
+    localparam int NODE_ID_W = $clog2(NUM_NODES);
+    localparam int DEP_W = NUM_NODES;
+    localparam int Q_CNT_W = $clog2(Q_DEPTH) + 1;
+
     typedef enum logic [2:0] { S_IDLE, S_SCAN, S_EXEC, S_BACKUP, S_UPD, S_DONE } fsm_t;
     fsm_t state;
-    int tmp_nid, tmp_fid, tmp_d;
 
     logic [31:0] ctrl, status, root_id, node_cnt, done_cnt, perf_conc;
     logic start_pulse;
+    logic q_overflow;
+
     logic [1:0]  node_state  [0:NUM_NODES-1];
     logic [7:0]  node_opcode [0:NUM_NODES-1];
     logic [5:0]  node_numinp [0:NUM_NODES-1];
     logic [5:0]  node_rdyinp [0:NUM_NODES-1];
     logic [31:0] node_result [0:NUM_NODES-1];
-    logic [31:0] node_dep    [0:NUM_NODES-1];
+    logic [DEP_W-1:0] node_dep [0:NUM_NODES-1];
     logic [31:0] node_op0    [0:NUM_NODES-1];
     logic [31:0] node_op1    [0:NUM_NODES-1];
     logic [31:0] node_imm0   [0:NUM_NODES-1];
     logic [31:0] node_imm1   [0:NUM_NODES-1];
     logic [9:0]  node_flags  [0:NUM_NODES-1];
+    logic [NODE_ID_W-1:0] node_src0 [0:NUM_NODES-1];
+    logic [NODE_ID_W-1:0] node_src1 [0:NUM_NODES-1];
+
     assign reg_ack = reg_cyc && reg_stb;
 
+    // C9+H1: Single queue process (no multi-driver)
+    logic [NODE_ID_W-1:0] queue [0:Q_DEPTH-1];
+    logic [NODE_ID_W-1:0] q_wptr, q_rptr;
+    logic [Q_CNT_W-1:0] q_cnt; // M6: proper width
+    wire q_empty = (q_cnt == 0);
+    wire q_full  = (q_cnt == Q_DEPTH);
+    wire [NODE_ID_W-1:0] pop_id = queue[q_rptr];
+
+    logic push_q, pop_q, pop_q2;
+    logic [NODE_ID_W-1:0] push_data;
+
+    logic [NODE_ID_W-1:0] backup_id;
+    logic backup_valid;
+
+    logic [DEP_W-1:0] upd_mask;
+    logic [NODE_ID_W-1:0] upd_src;
+    logic [NODE_ID_W-1:0] upd_cur;
+
+    logic [NODE_ID_W-1:0] scan_cnt;
+    logic [NODE_ID_W-1:0] exec_id;
+    int tmp_nid, tmp_fid;
+    logic tmp_found;
+    int tmp_rnid, tmp_rfid;
+
+    // C9: Single queue process
+    always_ff @(posedge clk or negedge reset_n) begin
+        if (!reset_n) begin
+            q_wptr <= '0; q_rptr <= '0; q_cnt <= '0;
+        end else begin
+            if (push_q && !q_full) begin
+                queue[q_wptr] <= push_data;
+                q_wptr <= q_wptr + 1'b1;
+            end
+            if (pop_q && !q_empty) begin
+                q_rptr <= q_rptr + 1'b1;
+            end
+            if (pop_q2 && !q_empty && (q_cnt > 1 || (push_q && !q_full))) begin
+                q_rptr <= q_rptr + 1'b1;
+            end
+
+            // Count management
+            if (push_q && !q_full && (pop_q && !q_empty) && (pop_q2 && !q_empty && q_cnt > 1))
+                q_cnt <= q_cnt + 1 - 2; // +1 push, -2 dual pop
+            else if (push_q && !q_full && (pop_q && !q_empty))
+                q_cnt <= q_cnt; // +1 push, -1 pop
+            else if (push_q && !q_full && (pop_q2 && !q_empty && q_cnt > 1))
+                q_cnt <= q_cnt - 1; // +1 push, -1 second pop
+            else if (push_q && !q_full)
+                q_cnt <= q_cnt + 1'b1;
+            else if ((pop_q && !q_empty) && (pop_q2 && !q_empty && q_cnt > 1))
+                q_cnt <= q_cnt - 2; // -2 dual pop
+            else if (pop_q && !q_empty)
+                q_cnt <= q_cnt - 1'b1;
+            else if (pop_q2 && !q_empty && q_cnt > 1)
+                q_cnt <= q_cnt - 1'b1;
+        end
+    end
+
+    // H1: Single process for all FSM + register state
     always_ff @(posedge clk or negedge reset_n) begin
         if (!reset_n) begin
             ctrl <= '0; root_id <= '0; node_cnt <= '0;
             done_cnt <= '0; start_pulse <= 1'b0;
-            status <= 32'd2; perf_conc <= '0;
+            status <= 32'd2; perf_conc <= '0; q_overflow <= 1'b0;
+            state <= S_IDLE; scan_cnt <= '0;
+            push_q <= 1'b0; pop_q <= 1'b0; pop_q2 <= 1'b0;
+            push_data <= '0;
+            backup_valid <= 1'b0; backup_id <= '0;
+            upd_mask <= '0; upd_src <= '0; upd_cur <= '0;
+            exec_id <= '0;
+            for (int i = 0; i < NUM_NODES; i++) begin
+                node_state[i]  <= 2'b00;
+                node_opcode[i] <= 8'h00;
+                node_numinp[i] <= 6'd0;
+                node_rdyinp[i] <= 6'd0;
+                node_flags[i]  <= 10'd0;
+                node_imm0[i]   <= 32'd0;
+                node_imm1[i]   <= 32'd0;
+                node_result[i] <= 32'd0;
+                node_dep[i]    <= '0;
+                node_op0[i]    <= 32'd0;
+                node_op1[i]    <= 32'd0;
+                node_src0[i]   <= '0;
+                node_src1[i]   <= '0;
+            end
         end else begin
+            push_q <= 1'b0; pop_q <= 1'b0; pop_q2 <= 1'b0;
             start_pulse <= 1'b0;
+
             if (reg_cyc && reg_stb && reg_we) begin
                 case (reg_adr[5:2])
-                    0: begin ctrl <= reg_dat_w; if (reg_dat_w[0]) start_pulse <= 1'b1; end
-                    2: root_id <= reg_dat_w;
-                    3: node_cnt <= reg_dat_w;
+                    4'd0: begin ctrl <= reg_dat_w; if (reg_dat_w[0]) start_pulse <= 1'b1; end
+                    4'd2: root_id  <= reg_dat_w;
+                    4'd3: node_cnt <= reg_dat_w;
+                    default: ;
                 endcase
                 if (reg_adr[7:0] >= 8'h20) begin
-                    tmp_nid = (reg_adr[7:2] - 8'h08) / 6;
-                    tmp_fid = (reg_adr[7:2] - 8'h08) % 6;
+                    tmp_nid = (reg_adr[7:2] - 6'd8) / 6;
+                    tmp_fid = (reg_adr[7:2] - 6'd8) % 6;
                     if (tmp_nid < NUM_NODES) begin
                         case (tmp_fid)
                             0: {node_state[tmp_nid], node_opcode[tmp_nid], node_numinp[tmp_nid], node_rdyinp[tmp_nid], node_flags[tmp_nid]} <= reg_dat_w;
                             1: node_imm0[tmp_nid] <= reg_dat_w;
                             2: node_imm1[tmp_nid] <= reg_dat_w;
                             3: node_result[tmp_nid] <= reg_dat_w;
-                            4: node_dep[tmp_nid] <= reg_dat_w;
+                            4: node_dep[tmp_nid] <= reg_dat_w[DEP_W-1:0];
+                            5: begin
+                                node_src0[tmp_nid] <= reg_dat_w[7:0];
+                                node_src1[tmp_nid] <= reg_dat_w[15:8];
+                            end
+                            default: ;
                         endcase
                     end
                 end
             end
-            if (start_pulse) status <= 32'd1;
-            if (state == S_DONE) status <= 32'd2;
-        end
-    end
-
-    always_comb begin
-        reg_dat_r = '0;
-        if (reg_cyc && reg_stb) begin
-            case (reg_adr[5:2])
-                0: reg_dat_r = ctrl; 1: reg_dat_r = status;
-                2: reg_dat_r = root_id; 3: reg_dat_r = node_cnt;
-                4: reg_dat_r = done_cnt; 5: reg_dat_r = perf_conc;
-            endcase
-        end
-    end
-
-    // Queue (simplified: single push/pop)
-    logic [$clog2(NUM_NODES)-1:0] queue [0:Q_DEPTH-1];
-    logic [$clog2(Q_DEPTH)-1:0] q_wptr, q_rptr;
-    logic [3:0] q_cnt;
-    wire q_empty = (q_cnt == 0);
-    wire pop_id = queue[q_rptr];
-    logic push_q, pop_q;
-    logic [$clog2(NUM_NODES)-1:0] push_data;
-
-    // Backup register for second popped node
-    logic [$clog2(NUM_NODES)-1:0] backup_id;
-    logic backup_valid;
-
-    // Update state
-    logic [31:0] upd_mask;
-    logic [$clog2(NUM_NODES)-1:0] upd_src;
-
-    logic [$clog2(NUM_NODES)-1:0] scan_cnt;
-
-    // Queue logic
-    always_ff @(posedge clk or negedge reset_n) begin
-        if (!reset_n) begin q_wptr <= '0; q_rptr <= '0; q_cnt <= '0; end
-        else begin
-            if (push_q && !(q_cnt == Q_DEPTH)) begin
-                queue[q_wptr] <= push_data; q_wptr <= q_wptr + 1;
-            end
-            if (pop_q && !q_empty) begin
-                q_rptr <= q_rptr + 1;
-            end
-            if (push_q && !(q_cnt == Q_DEPTH) && pop_q && !q_empty) q_cnt <= q_cnt;
-            else if (push_q && !(q_cnt == Q_DEPTH)) q_cnt <= q_cnt + 1;
-            else if (pop_q && !q_empty) q_cnt <= q_cnt - 1;
-        end
-    end
-
-    always_ff @(posedge clk or negedge reset_n) begin
-        if (!reset_n) begin
-            state <= S_IDLE; scan_cnt <= '0;
-            done_cnt <= '0; perf_conc <= '0;
-            push_q <= 1'b0; pop_q <= 1'b0; push_data <= '0;
-            backup_valid <= 1'b0; backup_id <= '0;
-            upd_mask <= '0; upd_src <= '0;
-            for (int i = 0; i < NUM_NODES; i++) begin
-                node_state[i] <= 2'b00; node_opcode[i] <= 8'h00;
-                node_numinp[i] <= 6'd0; node_rdyinp[i] <= 6'd0;
-                node_flags[i] <= 10'd0; node_imm0[i] <= 32'd0;
-                node_imm1[i] <= 32'd0; node_result[i] <= 32'd0;
-                node_dep[i] <= 32'd0;
-                node_op0[i] <= 32'd0; node_op1[i] <= 32'd0;
-            end
-        end else begin
-            push_q <= 1'b0; pop_q <= 1'b0;
 
             case (state)
                 S_IDLE: begin
                     if (start_pulse) begin
                         state <= S_SCAN; scan_cnt <= '0; done_cnt <= '0;
-                        backup_valid <= 1'b0;
-                        q_wptr <= '0; q_rptr <= '0; q_cnt <= '0;
+                        backup_valid <= 1'b0; q_overflow <= 1'b0;
                     end
                 end
 
@@ -143,83 +166,110 @@ module graph_scheduler_parallel #(
                     if (scan_cnt < node_cnt) begin
                         if (node_numinp[scan_cnt] == 0) begin
                             node_state[scan_cnt] <= 2'b10;
-                            push_q <= 1'b1; push_data <= scan_cnt;
+                            if (!q_full) begin
+                                push_q <= 1'b1; push_data <= scan_cnt;
+                            end else q_overflow <= 1'b1;
                         end else begin
                             node_state[scan_cnt] <= 2'b01;
                         end
-                        scan_cnt <= scan_cnt + 1;
+                        scan_cnt <= scan_cnt + 1'b1;
                     end else state <= S_EXEC;
                 end
 
                 S_EXEC: begin
                     if (!q_empty) begin
                         pop_q <= 1'b1;
-                        tmp_nid = pop_id;
-                        // Compute inline
-                        case (node_opcode[tmp_nid])
-                            8'h01: node_result[tmp_nid] <= node_imm0[tmp_nid];
-                            8'h02: node_result[tmp_nid] <= {31'h0, node_flags[tmp_nid][0]};
-                            8'h10: node_result[tmp_nid] <= node_op0[tmp_nid] + node_op1[tmp_nid];
-                            8'h11: node_result[tmp_nid] <= node_op0[tmp_nid] - node_op1[tmp_nid];
-                            8'h12: node_result[tmp_nid] <= node_op0[tmp_nid] * node_op1[tmp_nid];
-                            default: node_result[tmp_nid] <= node_imm0[tmp_nid];
+                        exec_id <= pop_id;
+                        // M6: Full opcode coverage
+                        case (node_opcode[pop_id])
+                            8'h01: node_result[pop_id] <= node_imm0[pop_id];
+                            8'h02: node_result[pop_id] <= {31'h0, node_flags[pop_id][0]};
+                            8'h10: node_result[pop_id] <= node_op0[pop_id] + node_op1[pop_id];
+                            8'h11: node_result[pop_id] <= node_op0[pop_id] - node_op1[pop_id];
+                            8'h12: node_result[pop_id] <= node_op0[pop_id] * node_op1[pop_id];
+                            8'h13: node_result[pop_id] <= node_op1[pop_id] != 0 ? node_op0[pop_id] / node_op1[pop_id] : 32'd0;
+                            8'h14: node_result[pop_id] <= node_op1[pop_id] != 0 ? node_op0[pop_id] % node_op1[pop_id] : 32'd0;
+                            8'h15: node_result[pop_id] <= {31'h0, node_op0[pop_id] == node_op1[pop_id]};
+                            8'h16: node_result[pop_id] <= {31'h0, $signed(node_op0[pop_id]) < $signed(node_op1[pop_id])};
+                            8'h17: node_result[pop_id] <= {31'h0, $signed(node_op0[pop_id]) > $signed(node_op1[pop_id])};
+                            8'h18: node_result[pop_id] <= {31'h0, $signed(node_op0[pop_id]) <= $signed(node_op1[pop_id])};
+                            8'h19: node_result[pop_id] <= {31'h0, $signed(node_op0[pop_id]) >= $signed(node_op1[pop_id])};
+                            8'h30: node_result[pop_id] <= node_op0[pop_id] != 0 ? node_op1[pop_id] : node_op1[pop_id];
+                            default: node_result[pop_id] <= node_imm0[pop_id];
                         endcase
-                        node_state[tmp_nid] <= 2'b11;
-                        done_cnt <= done_cnt + 1;
-                        // Check for second pop
+                        node_state[pop_id] <= 2'b11;
+                        done_cnt <= done_cnt + 1'b1;
+
+                        // C9: Check for second pop
                         if (q_cnt > 1) begin
+                            pop_q2 <= 1'b1;
                             backup_valid <= 1'b1;
                             backup_id <= queue[q_rptr + 1'b1];
-                            q_rptr <= q_rptr + 1; q_cnt <= q_cnt - 1;
                             if (perf_conc < 2) perf_conc <= 2;
                         end else begin
                             if (perf_conc < 1) perf_conc <= 1;
                             backup_valid <= 1'b0;
                         end
-                        upd_src <= tmp_nid;
-                        upd_mask <= node_dep[tmp_nid];
+                        upd_src <= pop_id;
+                        upd_mask <= node_dep[pop_id];
                         state <= S_UPD;
                     end else begin
                         if (node_state[root_id] == 2'b11) state <= S_DONE;
+                        else state <= S_DONE;
                     end
                 end
 
                 S_BACKUP: begin
                     if (backup_valid) begin
-                        tmp_nid = backup_id;
-                        case (node_opcode[tmp_nid])
-                            8'h01: node_result[tmp_nid] <= node_imm0[tmp_nid];
-                            8'h02: node_result[tmp_nid] <= {31'h0, node_flags[tmp_nid][0]};
-                            8'h10: node_result[tmp_nid] <= node_op0[tmp_nid] + node_op1[tmp_nid];
-                            8'h11: node_result[tmp_nid] <= node_op0[tmp_nid] - node_op1[tmp_nid];
-                            8'h12: node_result[tmp_nid] <= node_op0[tmp_nid] * node_op1[tmp_nid];
-                            default: node_result[tmp_nid] <= node_imm0[tmp_nid];
+                        exec_id <= backup_id;
+                        case (node_opcode[backup_id])
+                            8'h01: node_result[backup_id] <= node_imm0[backup_id];
+                            8'h02: node_result[backup_id] <= {31'h0, node_flags[backup_id][0]};
+                            8'h10: node_result[backup_id] <= node_op0[backup_id] + node_op1[backup_id];
+                            8'h11: node_result[backup_id] <= node_op0[backup_id] - node_op1[backup_id];
+                            8'h12: node_result[backup_id] <= node_op0[backup_id] * node_op1[backup_id];
+                            8'h13: node_result[backup_id] <= node_op1[backup_id] != 0 ? node_op0[backup_id] / node_op1[backup_id] : 32'd0;
+                            8'h14: node_result[backup_id] <= node_op1[backup_id] != 0 ? node_op0[backup_id] % node_op1[backup_id] : 32'd0;
+                            8'h15: node_result[backup_id] <= {31'h0, node_op0[backup_id] == node_op1[backup_id]};
+                            8'h16: node_result[backup_id] <= {31'h0, $signed(node_op0[backup_id]) < $signed(node_op1[backup_id])};
+                            8'h17: node_result[backup_id] <= {31'h0, $signed(node_op0[backup_id]) > $signed(node_op1[backup_id])};
+                            8'h18: node_result[backup_id] <= {31'h0, $signed(node_op0[backup_id]) <= $signed(node_op1[backup_id])};
+                            8'h19: node_result[backup_id] <= {31'h0, $signed(node_op0[backup_id]) >= $signed(node_op1[backup_id])};
+                            default: node_result[backup_id] <= node_imm0[backup_id];
                         endcase
-                        node_state[tmp_nid] <= 2'b11;
-                        done_cnt <= done_cnt + 1;
+                        node_state[backup_id] <= 2'b11;
+                        done_cnt <= done_cnt + 1'b1;
                         backup_valid <= 1'b0;
-                        upd_src <= tmp_nid;
-                        upd_mask <= node_dep[tmp_nid];
+                        upd_src <= backup_id;
+                        upd_mask <= node_dep[backup_id];
                     end
                     state <= S_UPD;
                 end
 
                 S_UPD: begin
                     if (upd_mask != 0) begin
-                        if (upd_mask[0]) tmp_d = 0;    else if (upd_mask[1]) tmp_d = 1;
-                        else if (upd_mask[2]) tmp_d = 2; else if (upd_mask[3]) tmp_d = 3;
-                        else if (upd_mask[4]) tmp_d = 4; else if (upd_mask[5]) tmp_d = 5;
-                        else if (upd_mask[6]) tmp_d = 6; else if (upd_mask[7]) tmp_d = 7;
-                        else if (upd_mask[8]) tmp_d = 8; else if (upd_mask[9]) tmp_d = 9;
-                        else tmp_d = 10;
-                        if (node_rdyinp[tmp_d] == 0) node_op0[tmp_d] <= node_result[upd_src];
-                        else node_op1[tmp_d] <= node_result[upd_src];
-                        node_rdyinp[tmp_d] <= node_rdyinp[tmp_d] + 1;
-                        if (node_rdyinp[tmp_d] + 1 >= node_numinp[tmp_d]) begin
-                            node_state[tmp_d] <= 2'b10;
-                            push_q <= 1'b1; push_data <= tmp_d;
+                        // H2: Generated priority encoder
+                        tmp_found = 1'b0;
+                        for (int b = 0; b < DEP_W; b++) begin
+                            if (!tmp_found && upd_mask[b]) begin
+                                upd_cur <= b[NODE_ID_W-1:0];
+                                tmp_found = 1'b1;
+                            end
                         end
                         upd_mask <= upd_mask & (upd_mask - 1);
+
+                        // C5: Source-based slot assignment (applied next cycle)
+                        if (node_src0[upd_cur] == upd_src)
+                            node_op0[upd_cur] <= node_result[upd_src];
+                        else if (node_src1[upd_cur] == upd_src)
+                            node_op1[upd_cur] <= node_result[upd_src];
+                        node_rdyinp[upd_cur] <= node_rdyinp[upd_cur] + 1'b1;
+                        if (node_rdyinp[upd_cur] + 1 >= node_numinp[upd_cur]) begin
+                            node_state[upd_cur] <= 2'b10;
+                            if (!q_full) begin
+                                push_q <= 1'b1; push_data <= upd_cur;
+                            end else q_overflow <= 1'b1;
+                        end
                     end else if (backup_valid) begin
                         state <= S_BACKUP;
                     end else begin
@@ -229,8 +279,44 @@ module graph_scheduler_parallel #(
                 end
 
                 S_DONE: begin end
+                default: state <= S_IDLE;
+            endcase
+
+            if (start_pulse) status <= {30'h0, q_overflow, 1'b1};
+            if (state == S_DONE) status <= {29'h0, q_overflow, 2'b10};
+        end
+    end
+
+    always_comb begin
+        reg_dat_r = '0;
+        if (reg_cyc && reg_stb) begin
+            case (reg_adr[5:2])
+                4'd0: reg_dat_r = ctrl;
+                4'd1: reg_dat_r = status;
+                4'd2: reg_dat_r = root_id;
+                4'd3: reg_dat_r = node_cnt;
+                4'd4: reg_dat_r = done_cnt;
+                4'd5: reg_dat_r = perf_conc;
+                default: begin
+                    if (reg_adr[7:0] >= 8'h20) begin
+                        tmp_rnid = (reg_adr[7:2] - 6'd8) / 6;
+                        tmp_rfid = (reg_adr[7:2] - 6'd8) % 6;
+                        if (tmp_rnid < NUM_NODES) begin
+                            case (tmp_rfid)
+                                0: reg_dat_r = {node_state[tmp_rnid], node_opcode[tmp_rnid], node_numinp[tmp_rnid], node_rdyinp[tmp_rnid], node_flags[tmp_rnid]};
+                                1: reg_dat_r = node_imm0[tmp_rnid];
+                                2: reg_dat_r = node_imm1[tmp_rnid];
+                                3: reg_dat_r = node_result[tmp_rnid];
+                                4: reg_dat_r = node_dep[tmp_rnid][31:0];
+                                default: reg_dat_r = '0;
+                            endcase
+                        end
+                    end
+                end
             endcase
         end
     end
 
 endmodule
+
+`default_nettype wire

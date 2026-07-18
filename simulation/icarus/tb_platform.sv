@@ -120,12 +120,15 @@ module tb_platform;
     // Clock
     always #5 clk = ~clk;
 
+    int fail_count;
+
     // Test
     initial begin
         $dumpfile("build/sim/tb_platform.vcd");
         $dumpvars(0, tb_platform);
 
         clk = 0; reset_n = 0;
+        fail_count = 0;
         #15 reset_n = 1;
 
         // Wait for 12-instruction test program to execute (~50 cycles)
@@ -133,38 +136,37 @@ module tb_platform;
 
         // Register checks
         $display("=== Register Check ===");
-        if (cpu.regfile[1] !== 32'd42) $error("x1 = %0d, expected 42", cpu.regfile[1]);
+        if (cpu.regfile[1] !== 32'd42) fail_count++;
         else $display("x1 = 42: PASS");
 
-        if (cpu.regfile[2] !== 32'd43) $error("x2 = %0d, expected 43", cpu.regfile[2]);
+        if (cpu.regfile[2] !== 32'd43) fail_count++;
         else $display("x2 = 43: PASS");
 
-        if (cpu.regfile[3] !== 32'h00010000) $error("x3 = 0x%08X, expected 0x00010000", cpu.regfile[3]);
+        if (cpu.regfile[3] !== 32'h00010000) fail_count++;
         else $display("x3 = 0x00010000: PASS");
 
-        if (cpu.regfile[4] !== 32'd42) $error("x4 = %0d, expected 42", cpu.regfile[4]);
+        if (cpu.regfile[4] !== 32'd42) fail_count++;
         else $display("x4 = 42: PASS");
 
-        if (cpu.regfile[5] !== 32'd100) $error("x5 = %0d, expected 100", cpu.regfile[5]);
+        if (cpu.regfile[5] !== 32'd100) fail_count++;
         else $display("x5 = 100: PASS");
 
-        if (cpu.regfile[6] !== 32'h00020000) $error("x6 = 0x%08X, expected 0x00020000", cpu.regfile[6]);
+        if (cpu.regfile[6] !== 32'h00020000) fail_count++;
         else $display("x6 = 0x00020000: PASS");
 
-        if (cpu.regfile[7] !== 32'd1) $error("x7 = %0d, expected 1", cpu.regfile[7]);
+        if (cpu.regfile[7] !== 32'd1) fail_count++;
         else $display("x7 = 1: PASS");
 
         // Memory check
-        if (ram.ram.mem[0] !== 32'd42) $error("RAM[0] = %0d, expected 42", ram.ram.mem[0]);
+        if (ram.ram.mem[0] !== 32'd42) fail_count++;
         else $display("RAM store/load: PASS");
 
         // UART TX check: the transmitter should be busy sending the byte
-        if (!uart_inst.tx_busy) $error("UART should be transmitting after write");
+        if (!uart_inst.tx_busy) fail_count++;
         else $display("UART TX write: PASS");
 
         $display("");
-        $display("PASS: tb_platform");
-        $finish;
+        if (fail_count == 0) begin $display("PASS: tb_platform"); $finish(0); end else begin $display("FAIL: tb_platform (%0d failures)", fail_count); $finish(1); end
     end
 
 endmodule

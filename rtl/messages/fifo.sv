@@ -1,28 +1,4 @@
-// Lucid FIFO Module
-// =================
-// Standard FIFO used for message passing between FPU modules.
-//
-// Inputs:
-//   clk          (1)    Clock
-//   reset_n      (1)    Active-low reset
-//   wr_en        (1)    Write enable
-//   wr_data      (WIDTH) Write data
-//   rd_en        (1)    Read enable
-//
-// Outputs:
-//   full         (1)    FIFO is full
-//   empty        (1)    FIFO is empty
-//   rd_data      (WIDTH) Read data
-//   count        (log2(DEPTH)) Number of entries
-//
-// Parameters:
-//   WIDTH        (32)   Data width in bits
-//   DEPTH        (8)    Number of entries
-//
-// Protocol:
-//   Standard ready/valid handshake.
-//   wr_en && !full  → data written
-//   rd_en && !empty → data read
+`default_nettype none
 
 module fifo #(
     parameter int WIDTH = 32,
@@ -43,8 +19,9 @@ module fifo #(
 );
 
     localparam int CNT_WIDTH = $clog2(DEPTH) + 1;
+    localparam int PTR_WIDTH = $clog2(DEPTH);
 
-    logic [WIDTH-1:0] mem [DEPTH];
+    logic [WIDTH-1:0] mem [0:DEPTH-1];
     logic [CNT_WIDTH-1:0] wr_ptr, rd_ptr;
     logic [WIDTH-1:0] rd_data_q;
 
@@ -55,11 +32,11 @@ module fifo #(
             rd_data_q <= '0;
         end else begin
             if (wr_en && !full) begin
-                mem[wr_ptr[$clog2(DEPTH)-1:0]] <= wr_data;
+                mem[wr_ptr[PTR_WIDTH-1:0]] <= wr_data;
                 wr_ptr <= wr_ptr + 1'b1;
             end
             if (rd_en && !empty) begin
-                rd_data_q <= mem[rd_ptr[$clog2(DEPTH)-1:0]];
+                rd_data_q <= mem[rd_ptr[PTR_WIDTH-1:0]];
                 rd_ptr <= rd_ptr + 1'b1;
             end
         end
@@ -72,3 +49,5 @@ module fifo #(
                      (wr_ptr[CNT_WIDTH-1]   != rd_ptr[CNT_WIDTH-1]);
 
 endmodule
+
+`default_nettype wire

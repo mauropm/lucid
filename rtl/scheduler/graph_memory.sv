@@ -1,3 +1,5 @@
+`default_nettype none
+
 // Graph Memory
 // ============
 // BRAM-based storage for Lucid IR graph nodes.
@@ -101,3 +103,5 @@ module graph_memory #(
     end
 
 endmodule
+
+`default_nettype wire

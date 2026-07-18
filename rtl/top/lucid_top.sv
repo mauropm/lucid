@@ -1,60 +1,55 @@
-// Lucid Top-Level for Tang Nano 20K
-// ==================================
-// Integrates all subsystems: RV32IM CPU, Wishbone bus, UART, memories,
-// graph scheduler, and FPU control. Targets GW2AR-18 FPGA at 100 MHz.
+`default_nettype none
 
 module lucid_top (
-    // 27 MHz external clock
     input  logic        clk_27m,
-
-    // UART
     input  logic        uart_rx,
     output logic        uart_tx,
-
-    // Reset button (active low)
     input  logic        btn_rst_n,
-
-    // LEDs (optional)
     output logic [2:0]  led
 );
 
     // ============================================================
     // Clock generation
     // ============================================================
-    // For simulation, bypass the PLL. For synthesis, instantiate
-    // Gowin PLL primitive: clk_27m → 100 MHz
-
 `ifdef SYNTHESIS
-    // Gowin PLL primitive (rPLL)
     logic pll_lock;
     logic clk_100m;
 
-    rPLL pll_inst (
+    // H14+L3: Correct Gowin rPLL parameters, no defparam
+    rPLL #(
+        .FCLKIN("27"),
+        .IDIV_SEL(2),
+        .FBDIV_SEL(40),
+        .ODIV_SEL(5)
+    ) pll_inst (
         .clkout(clk_100m),
         .lock(pll_lock),
         .clkin(clk_27m)
     );
-    defparam pll_inst.FCLKIN = "27";
-    defparam pll_inst.DIV_F = "100";
-    defparam pll_inst.DIV_Q = "5";
-    defparam pll_inst.FILTER = "1";
 
     logic clk;
     assign clk = clk_100m;
 `else
     logic clk;
     assign clk = clk_27m;
+    logic pll_lock = 1'b1;
 `endif
 
     // ============================================================
-    // Reset synchronization
+    // H16: Reset synchronization - async assert, sync deassert
     // ============================================================
     logic reset_n;
     logic [3:0] reset_sync;
 
-    always_ff @(posedge clk) begin
-        reset_sync <= {reset_sync[2:0], btn_rst_n};
-        reset_n <= reset_sync[2] & reset_sync[3];
+    always_ff @(posedge clk or negedge btn_rst_n) begin
+        if (!btn_rst_n) begin
+            reset_sync <= 4'b0000;
+            reset_n    <= 1'b0;
+        end else begin
+            // H16: Qualify with PLL lock
+            reset_sync <= {reset_sync[2:0], 1'b1 & pll_lock};
+            reset_n    <= reset_sync[3];
+        end
     end
 
     // ============================================================
@@ -65,28 +60,22 @@ module lucid_top (
     logic [3:0]  wb_sel;
     logic        wb_ack;
 
-    // Slave 0: Boot ROM
     logic        s0_cyc, s0_stb, s0_ack;
     logic [31:0] s0_adr, s0_dat_r;
 
-    // Slave 1: Management RAM
     logic        s1_cyc, s1_stb, s1_we, s1_ack;
     logic [31:0] s1_adr, s1_dat_w, s1_dat_r;
     logic [3:0]  s1_sel;
 
-    // Slave 2: UART
     logic        s2_cyc, s2_stb, s2_we, s2_ack;
     logic [31:0] s2_adr, s2_dat_w, s2_dat_r;
     logic [3:0]  s2_sel;
 
-    // Slave 3: Debug / FPU Control
-    logic        s3_cyc, s3_stb, s3_we, s3_ack;
-    logic [31:0] s3_adr, s3_dat_w, s3_dat_r;
-    logic [3:0]  s3_sel;
-
     // ============================================================
     // RV32IM CPU
     // ============================================================
+    logic cpu_running;
+
     rv32im_core cpu (
         .clk(clk),
         .reset_n(reset_n),
@@ -97,7 +86,8 @@ module lucid_top (
         .wb_dat_o(wb_dat_o),
         .wb_sel(wb_sel),
         .wb_dat_i(wb_dat_i),
-        .wb_ack(wb_ack)
+        .wb_ack(wb_ack),
+        .running(cpu_running)
     );
 
     // ============================================================
@@ -188,10 +178,12 @@ module lucid_top (
     );
 
     // ============================================================
-    // LEDs
+    // LEDs - C2: No hierarchical references
     // ============================================================
     assign led[0] = reset_n;
-    assign led[1] = cpu.status[0]; // running
+    assign led[1] = cpu_running;
     assign led[2] = 1'b1;
 
 endmodule
+
+`default_nettype wire

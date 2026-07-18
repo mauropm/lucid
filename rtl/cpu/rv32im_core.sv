@@ -1,16 +1,9 @@
-// RV32IM Management CPU Core
-// ==========================
-// 3-state CPU: fetch, execute, load-data.
-// Wishbone B4 master. Single issue, in-order.
-// Supports RV32I base + M extension (multiply/divide).
-//
-// Reset vector: 0x00000000 (Boot ROM)
+`default_nettype none
 
 module rv32im_core (
     input  logic        clk,
     input  logic        reset_n,
 
-    // Wishbone master (instruction fetch + data access)
     output logic        wb_cyc,
     output logic        wb_stb,
     output logic        wb_we,
@@ -18,10 +11,11 @@ module rv32im_core (
     output logic [31:0] wb_dat_o,
     output logic [3:0]  wb_sel,
     input  logic [31:0] wb_dat_i,
-    input  logic        wb_ack
+    input  logic        wb_ack,
+
+    output logic        running
 );
 
-    // State machine
     typedef enum logic [1:0] {
         STATE_FETCH,
         STATE_EXEC,
@@ -32,7 +26,6 @@ module rv32im_core (
     logic [31:0] pc, pc_next;
     logic [31:0] instr;
 
-    // Decoded instruction fields
     logic [6:0]  opcode;
     logic [2:0]  funct3;
     logic [6:0]  funct7;
@@ -40,37 +33,25 @@ module rv32im_core (
     logic [31:0] imm_i, imm_s, imm_b, imm_u, imm_j;
     logic [31:0] imm;
 
-    // Register file
     logic [31:0] regfile [32];
     logic [31:0] rs1_val, rs2_val;
 
-    // ALU
     logic [31:0] alu_a, alu_b;
     logic [31:0] alu_result;
 
-    // Multiplier/divider results
-    logic [31:0] mul_result;
-    logic [31:0] div_result, div_rem;
-
-    // Load/store
     logic [31:0] ld_result;
     logic [31:0] st_data;
 
-    // CSR
     logic [31:0] csr_cycle, csr_instret;
     logic [31:0] csr_mtvec, csr_mepc, csr_mcause, csr_mscratch;
 
-    // Execution control
     logic reg_wr_en;
-    logic [4:0] reg_wr_addr;
+    logic [4:0]  reg_wr_addr;
     logic [31:0] reg_wr_data;
     logic branch_taken;
     logic [31:0] branch_target;
     logic is_load, is_store;
 
-    // ============================================================
-    // Instruction Decode
-    // ============================================================
     assign opcode = instr[6:0];
     assign funct3 = instr[14:12];
     assign funct7 = instr[31:25];
@@ -78,55 +59,48 @@ module rv32im_core (
     assign rs2    = instr[24:20];
     assign rd     = instr[11:7];
 
-    // Immediate generation
     assign imm_i = { {21{instr[31]}}, instr[30:20] };
     assign imm_s = { {21{instr[31]}}, instr[30:25], instr[11:7] };
     assign imm_b = { {20{instr[31]}}, instr[7], instr[30:25], instr[11:8], 1'b0 };
     assign imm_u = { instr[31:12], 12'h000 };
     assign imm_j = { {12{instr[31]}}, instr[19:12], instr[20], instr[30:21], 1'b0 };
 
-    // Main ALU
     always_comb begin
         alu_result = '0;
-        unique case (opcode)
-            7'b0110011: begin // R-type
+        case (opcode)
+            7'b0110011: begin
                 case (funct3)
                     3'b000: alu_result = funct7[5] ? alu_a - alu_b : alu_a + alu_b;
                     3'b001: alu_result = alu_a << alu_b[4:0];
-                    3'b010: alu_result = $signed(alu_a) < $signed(alu_b);
-                    3'b011: alu_result = alu_a < alu_b;
+                    3'b010: alu_result = {31'h0, $signed(alu_a) < $signed(alu_b)};
+                    3'b011: alu_result = {31'h0, alu_a < alu_b};
                     3'b100: alu_result = alu_a ^ alu_b;
                     3'b101: alu_result = funct7[5] ? ($signed(alu_a) >>> alu_b[4:0]) : (alu_a >> alu_b[4:0]);
                     3'b110: alu_result = alu_a | alu_b;
                     3'b111: alu_result = alu_a & alu_b;
+                    default: alu_result = '0;
                 endcase
             end
-            7'b0010011: begin // I-type ALU
+            7'b0010011: begin
                 case (funct3)
                     3'b000: alu_result = alu_a + alu_b;
                     3'b001: alu_result = alu_a << alu_b[4:0];
-                    3'b010: alu_result = $signed(alu_a) < $signed(alu_b);
-                    3'b011: alu_result = alu_a < alu_b;
+                    3'b010: alu_result = {31'h0, $signed(alu_a) < $signed(alu_b)};
+                    3'b011: alu_result = {31'h0, alu_a < alu_b};
                     3'b100: alu_result = alu_a ^ alu_b;
                     3'b101: alu_result = funct7[5] ? ($signed(alu_a) >>> alu_b[4:0]) : (alu_a >> alu_b[4:0]);
                     3'b110: alu_result = alu_a | alu_b;
                     3'b111: alu_result = alu_a & alu_b;
+                    default: alu_result = '0;
                 endcase
             end
-            7'b0000011: begin // Load
-                alu_result = alu_a + alu_b;
-            end
-            7'b0100011: begin // Store
-                alu_result = alu_a + alu_b;
-            end
-            7'b1100111: begin // JALR
-                alu_result = (alu_a + alu_b) & ~1;
-            end
-            default: ;
+            7'b0000011: alu_result = alu_a + alu_b;
+            7'b0100011: alu_result = alu_a + alu_b;
+            7'b1100111: alu_result = (alu_a + alu_b) & ~1;
+            default: alu_result = '0;
         endcase
     end
 
-    // Branch comparator
     always_comb begin
         branch_taken = 1'b0;
         if (opcode == 7'b1100011) begin
@@ -137,89 +111,120 @@ module rv32im_core (
                 3'b101: branch_taken = ($signed(alu_a) >= $signed(alu_b));
                 3'b110: branch_taken = (alu_a < alu_b);
                 3'b111: branch_taken = (alu_a >= alu_b);
+                default: branch_taken = 1'b0;
             endcase
         end
     end
     assign branch_target = pc + imm_b;
 
-    // Load alignment and sign-extension
+    // C4: Load alignment - select correct byte/halfword lane based on address
     always_comb begin
         ld_result = '0;
         case (funct3)
-            3'b000: ld_result = { {24{wb_dat_i[7]}},  wb_dat_i[7:0]   }; // LB
-            3'b001: ld_result = { {16{wb_dat_i[15]}}, wb_dat_i[15:0]  }; // LH
-            3'b010: ld_result = wb_dat_i;                                 // LW
-            3'b100: ld_result = { 24'h0,              wb_dat_i[7:0]   }; // LBU
-            3'b101: ld_result = { 16'h0,              wb_dat_i[15:0]  }; // LHU
+            3'b000: begin // LB
+                case (wb_adr[1:0])
+                    2'b00: ld_result = { {24{wb_dat_i[7]}},  wb_dat_i[7:0]   };
+                    2'b01: ld_result = { {24{wb_dat_i[15]}}, wb_dat_i[15:8]  };
+                    2'b10: ld_result = { {24{wb_dat_i[23]}}, wb_dat_i[23:16] };
+                    2'b11: ld_result = { {24{wb_dat_i[31]}}, wb_dat_i[31:24] };
+                    default: ld_result = '0;
+                endcase
+            end
+            3'b001: begin // LH
+                case (wb_adr[1])
+                    1'b0: ld_result = { {16{wb_dat_i[15]}}, wb_dat_i[15:0]  };
+                    1'b1: ld_result = { {16{wb_dat_i[31]}}, wb_dat_i[31:16] };
+                    default: ld_result = '0;
+                endcase
+            end
+            3'b010: ld_result = wb_dat_i; // LW
+            3'b100: begin // LBU
+                case (wb_adr[1:0])
+                    2'b00: ld_result = { 24'h0, wb_dat_i[7:0]   };
+                    2'b01: ld_result = { 24'h0, wb_dat_i[15:8]  };
+                    2'b10: ld_result = { 24'h0, wb_dat_i[23:16] };
+                    2'b11: ld_result = { 24'h0, wb_dat_i[31:24] };
+                    default: ld_result = '0;
+                endcase
+            end
+            3'b101: begin // LHU
+                case (wb_adr[1])
+                    1'b0: ld_result = { 16'h0, wb_dat_i[15:0]  };
+                    1'b1: ld_result = { 16'h0, wb_dat_i[31:16] };
+                    default: ld_result = '0;
+                endcase
+            end
+            default: ld_result = '0;
         endcase
     end
 
-    // Store data formatting
     always_comb begin
         st_data = '0;
-        unique case (funct3)
-            3'b000: st_data = {4{rs2_val[7:0]}};   // SB
-            3'b001: st_data = {2{rs2_val[15:0]}};  // SH
-            3'b010: st_data = rs2_val;              // SW
+        case (funct3)
+            3'b000: st_data = {4{rs2_val[7:0]}};
+            3'b001: st_data = {2{rs2_val[15:0]}};
+            3'b010: st_data = rs2_val;
+            default: st_data = '0;
         endcase
     end
 
-    // Byte select for stores
     always_comb begin
         wb_sel = 4'h0;
         if (is_store && state == STATE_EXEC) begin
-            unique case (funct3)
+            case (funct3)
                 3'b000: wb_sel = 4'b0001 << wb_adr[1:0];
                 3'b001: wb_sel = (wb_adr[1] ? 4'b1100 : 4'b0011);
                 3'b010: wb_sel = 4'b1111;
+                default: wb_sel = 4'h0;
             endcase
         end else if (state == STATE_FETCH) begin
             wb_sel = 4'b1111;
         end
     end
 
-    // ============================================================
-    // Multiply / Divide (M extension)
-    logic [63:0] mul_full;
-    assign mul_full = $signed(rs1_val) * $signed(rs2_val);
+    // C3: 64-bit multiply for MULH family
+    logic signed [63:0] mul_ss;
+    logic signed [63:0] mul_su;
+    logic [63:0]        mul_uu;
 
-    // ============================================================
-    // Immediate selection
-    // ============================================================
+    assign mul_ss = $signed({1'b0, rs1_val}) * $signed({1'b0, rs2_val});
+    assign mul_su = $signed({1'b0, rs1_val}) * $signed({1'b0, rs2_val});
+    assign mul_uu = {1'b0, rs1_val} * {1'b0, rs2_val};
+
+    logic signed [63:0] mulh_ss;
+    logic signed [63:0] mulh_su;
+    logic [63:0]        mulh_uu;
+
+    assign mulh_ss = $signed({{32{rs1_val[31]}}, rs1_val}) * $signed({{32{rs2_val[31]}}, rs2_val});
+    assign mulh_su = $signed({{32{rs1_val[31]}}, rs1_val}) * $signed({1'b0, rs2_val});
+    assign mulh_uu = {1'b0, rs1_val} * {1'b0, rs2_val};
+
     always_comb begin
-        unique case (opcode)
-            7'b0110011: imm = '0; // R-type
+        case (opcode)
+            7'b0110011: imm = '0;
             7'b0010011: imm = imm_i;
             7'b0000011: imm = imm_i;
             7'b0100011: imm = imm_s;
             7'b1100011: imm = imm_b;
-            7'b0110111: imm = imm_u; // LUI
-            7'b0010111: imm = imm_u; // AUIPC
-            7'b1101111: imm = imm_j; // JAL
-            7'b1100111: imm = imm_i; // JALR
-            7'b1110011: imm = {27'h0, instr[19:15]}; // CSR
+            7'b0110111: imm = imm_u;
+            7'b0010111: imm = imm_u;
+            7'b1101111: imm = imm_j;
+            7'b1100111: imm = imm_i;
+            7'b1110011: imm = {27'h0, instr[19:15]};
             default:    imm = '0;
         endcase
     end
 
-    // ALU sources
     always_comb begin
         alu_a = rs1_val;
         alu_b = '0;
-        if (opcode == 7'b0110011 || opcode == 7'b1100011) begin
+        if (opcode == 7'b0110011 || opcode == 7'b1100011)
             alu_b = rs2_val;
-        end else begin
+        else
             alu_b = imm;
-        end
-        // AUIPC: rs1 is PC
         if (opcode == 7'b0010111) alu_a = pc;
-        // JAL: rd gets PC+4
-        // JALR: rd gets PC+4, target is rs1+imm
     end
 
-    // ============================================================
-    // Register File
-    // ============================================================
     always_ff @(posedge clk or negedge reset_n) begin
         if (!reset_n) begin
             for (int i = 0; i < 32; i++) regfile[i] <= '0;
@@ -231,9 +236,7 @@ module rv32im_core (
     assign rs1_val = (rs1 == 5'd0) ? 32'd0 : regfile[rs1];
     assign rs2_val = (rs2 == 5'd0) ? 32'd0 : regfile[rs2];
 
-    // ============================================================
-    // CSRs
-    // ============================================================
+    // M1: CSR implementation with proper write support
     always_ff @(posedge clk or negedge reset_n) begin
         if (!reset_n) begin
             csr_cycle    <= '0;
@@ -244,16 +247,51 @@ module rv32im_core (
             csr_mscratch <= '0;
         end else begin
             csr_cycle <= csr_cycle + 1'b1;
-            if (state == STATE_EXEC && state_next == STATE_FETCH && !is_load && !is_store && opcode != 7'b1110011) begin
+            // M1: Count every completed instruction
+            if ((state == STATE_EXEC && state_next == STATE_FETCH) ||
+                (state == STATE_EXEC && (opcode == 7'b1100011 || opcode == 7'b1101111 || opcode == 7'b1100111))) begin
                 csr_instret <= csr_instret + 1'b1;
             end
-            // CSR writes handled in execution
+            // M1: CSR writes
+            if (state == STATE_EXEC && opcode == 7'b1110011) begin
+                case (funct3)
+                    3'b001: begin // CSRRW
+                        case (instr[31:20])
+                            12'h340: csr_mscratch <= rs1_val;
+                            12'h305: csr_mtvec    <= rs1_val;
+                            12'h341: csr_mepc     <= rs1_val;
+                            12'h342: csr_mcause   <= rs1_val;
+                            default: ;
+                        endcase
+                    end
+                    3'b010: begin // CSRRS
+                        if (rs1 != 5'd0) begin
+                            case (instr[31:20])
+                                12'h340: csr_mscratch <= csr_mscratch | rs1_val;
+                                12'h305: csr_mtvec    <= csr_mtvec | rs1_val;
+                                12'h341: csr_mepc     <= csr_mepc | rs1_val;
+                                12'h342: csr_mcause   <= csr_mcause | rs1_val;
+                                default: ;
+                            endcase
+                        end
+                    end
+                    3'b011: begin // CSRRC
+                        if (rs1 != 5'd0) begin
+                            case (instr[31:20])
+                                12'h340: csr_mscratch <= csr_mscratch & ~rs1_val;
+                                12'h305: csr_mtvec    <= csr_mtvec & ~rs1_val;
+                                12'h341: csr_mepc     <= csr_mepc & ~rs1_val;
+                                12'h342: csr_mcause   <= csr_mcause & ~rs1_val;
+                                default: ;
+                            endcase
+                        end
+                    end
+                    default: ;
+                endcase
+            end
         end
     end
 
-    // ============================================================
-    // Main State Machine
-    // ============================================================
     always_comb begin
         state_next = STATE_FETCH;
         wb_cyc   = 1'b0;
@@ -268,17 +306,15 @@ module rv32im_core (
         is_store = 1'b0;
         pc_next  = pc + 4;
 
-
         case (state)
             STATE_FETCH: begin
                 wb_cyc = 1'b1;
                 wb_stb = 1'b1;
                 wb_adr = pc;
-                if (wb_ack) begin
+                if (wb_ack)
                     state_next = STATE_EXEC;
-                end else begin
+                else
                     state_next = STATE_FETCH;
-                end
             end
 
             STATE_EXEC: begin
@@ -286,19 +322,22 @@ module rv32im_core (
                 case (opcode)
                     7'b0110011: begin // R-type
                         if (funct7 == 7'b0000001) begin
-                            // M extension
                             case (funct3)
                                 3'b000: begin // MUL
                                     reg_wr_en   = 1'b1;
-                                    reg_wr_data = $signed(alu_a) * $signed(alu_b);
+                                    reg_wr_data = $signed({1'b0, alu_a}) * $signed({1'b0, alu_b});
                                 end
                                 3'b001: begin // MULH
                                     reg_wr_en   = 1'b1;
-                                    reg_wr_data = ($signed(alu_a) * $signed(alu_b)) >> 32;
+                                    reg_wr_data = mulh_ss[63:32];
                                 end
-                                3'b010, 3'b011: begin // MULHSU/MULHU
+                                3'b010: begin // MULHSU
                                     reg_wr_en   = 1'b1;
-                                    reg_wr_data = ($unsigned(alu_a) * $unsigned(alu_b)) >> 32;
+                                    reg_wr_data = mulh_su[63:32];
+                                end
+                                3'b011: begin // MULHU
+                                    reg_wr_en   = 1'b1;
+                                    reg_wr_data = mulh_uu[63:32];
                                 end
                                 3'b100: begin // DIV
                                     reg_wr_en   = 1'b1;
@@ -306,7 +345,7 @@ module rv32im_core (
                                 end
                                 3'b101: begin // DIVU
                                     reg_wr_en   = 1'b1;
-                                    reg_wr_data = (alu_b != 0) ? $unsigned(alu_a) / $unsigned(alu_b) : -1;
+                                    reg_wr_data = (alu_b != 0) ? alu_a / alu_b : 32'hFFFF_FFFF;
                                 end
                                 3'b110: begin // REM
                                     reg_wr_en   = 1'b1;
@@ -314,7 +353,11 @@ module rv32im_core (
                                 end
                                 3'b111: begin // REMU
                                     reg_wr_en   = 1'b1;
-                                    reg_wr_data = (alu_b != 0) ? $unsigned(alu_a) % $unsigned(alu_b) : alu_a;
+                                    reg_wr_data = (alu_b != 0) ? alu_a % alu_b : alu_a;
+                                end
+                                default: begin
+                                    reg_wr_en   = 1'b1;
+                                    reg_wr_data = '0;
                                 end
                             endcase
                         end else begin
@@ -323,7 +366,7 @@ module rv32im_core (
                         end
                     end
 
-                    7'b0010011: begin // I-type ALU
+                    7'b0010011: begin
                         reg_wr_en   = 1'b1;
                         reg_wr_data = alu_result;
                     end
@@ -379,48 +422,68 @@ module rv32im_core (
                     end
 
                     7'b1100011: begin // Branch
-                        if (branch_taken) begin
+                        if (branch_taken)
                             pc_next = branch_target;
-                        end else begin
+                        else
                             pc_next = pc + 4;
-                        end
                     end
 
                     7'b1110011: begin // CSR
-                        unique case (funct3)
+                        reg_wr_en = 1'b1;
+                        case (funct3)
                             3'b001: begin // CSRRW
-                                reg_wr_en   = 1'b1;
-                                if (instr[31:20] == 12'hC00) reg_wr_data = csr_cycle;
-                                else if (instr[31:20] == 12'hC02) reg_wr_data = csr_instret;
-                                else reg_wr_data = '0;
-                                // CSRRW writes to csr_mscratch are handled in always_ff
+                                case (instr[31:20])
+                                    12'hC00: reg_wr_data = csr_cycle;
+                                    12'hC02: reg_wr_data = csr_instret;
+                                    12'h340: reg_wr_data = csr_mscratch;
+                                    12'h305: reg_wr_data = csr_mtvec;
+                                    12'h341: reg_wr_data = csr_mepc;
+                                    12'h342: reg_wr_data = csr_mcause;
+                                    default: reg_wr_data = '0;
+                                endcase
                             end
                             3'b010: begin // CSRRS
-                                reg_wr_en   = 1'b1;
-                                if (instr[31:20] == 12'hC00) reg_wr_data = csr_cycle;
-                                else if (instr[31:20] == 12'hC02) reg_wr_data = csr_instret;
-                                else if (instr[31:20] == 12'h340) reg_wr_data = csr_mscratch;
-                                else reg_wr_data = '0;
+                                case (instr[31:20])
+                                    12'hC00: reg_wr_data = csr_cycle;
+                                    12'hC02: reg_wr_data = csr_instret;
+                                    12'h340: reg_wr_data = csr_mscratch;
+                                    12'h305: reg_wr_data = csr_mtvec;
+                                    12'h341: reg_wr_data = csr_mepc;
+                                    12'h342: reg_wr_data = csr_mcause;
+                                    default: reg_wr_data = '0;
+                                endcase
                             end
-                            default: ;
+                            3'b011: begin // CSRRC
+                                case (instr[31:20])
+                                    12'hC00: reg_wr_data = csr_cycle;
+                                    12'hC02: reg_wr_data = csr_instret;
+                                    12'h340: reg_wr_data = csr_mscratch;
+                                    12'h305: reg_wr_data = csr_mtvec;
+                                    12'h341: reg_wr_data = csr_mepc;
+                                    12'h342: reg_wr_data = csr_mcause;
+                                    default: reg_wr_data = '0;
+                                endcase
+                            end
+                            default: reg_wr_data = '0;
                         endcase
                     end
 
                     default: begin
-                        // Illegal instruction — just skip
                         pc_next = pc + 4;
                     end
                 endcase
             end
 
             STATE_LOAD: begin
-                // Not used in current design
+                state_next = STATE_FETCH;
+            end
+
+            default: begin
                 state_next = STATE_FETCH;
             end
         endcase
     end
 
-    // State and PC update
     always_ff @(posedge clk or negedge reset_n) begin
         if (!reset_n) begin
             state <= STATE_FETCH;
@@ -428,14 +491,16 @@ module rv32im_core (
             instr <= '0;
         end else begin
             state <= state_next;
-            if (state == STATE_FETCH && wb_ack) begin
+            if (state == STATE_FETCH && wb_ack)
                 instr <= wb_dat_i;
-            end
             if ((state == STATE_EXEC && state_next == STATE_FETCH) ||
-                (state == STATE_EXEC && (opcode == 7'b1100011 || opcode == 7'b1101111 || opcode == 7'b1100111))) begin
+                (state == STATE_EXEC && (opcode == 7'b1100011 || opcode == 7'b1101111 || opcode == 7'b1100111)))
                 pc <= pc_next;
-            end
         end
     end
 
+    assign running = (state != STATE_FETCH) || (state == STATE_FETCH && !wb_ack);
+
 endmodule
+
+`default_nettype wire
