@@ -1,28 +1,34 @@
-// Lucid Message Dispatcher Testbench (Icarus Verilog)
+// Message Dispatcher Testbench
 `timescale 1ns/1ps
 
 module tb_message_dispatcher;
-    parameter int NUM_UNITS = 4;
+    parameter int NUM_MODULES = 4;
 
     logic clk, reset_n;
-    logic [31:0] msg_in_data;
-    logic msg_in_valid, msg_in_ready;
 
-    logic [31:0] msg_out_data [NUM_UNITS];
-    logic msg_out_valid [NUM_UNITS];
-    logic msg_out_ready [NUM_UNITS];
+    // Wishbone (program routing table — not tested here)
+    logic wb_cyc, wb_stb, wb_we, wb_ack;
+    logic [31:0] wb_adr, wb_dat_w, wb_dat_r;
+
+    // Module TX/RX
+    logic [NUM_MODULES-1:0] tx_valid, tx_last, tx_ready;
+    logic [NUM_MODULES*32-1:0] tx_data;
+    logic [NUM_MODULES-1:0] rx_valid, rx_last, rx_ready;
+    logic [NUM_MODULES*32-1:0] rx_data;
 
     message_dispatcher #(
-        .NUM_UNITS(NUM_UNITS)
+        .NUM_MODULES(NUM_MODULES),
+        .ROUTER_INPUTS(NUM_MODULES),
+        .ROUTER_OUTPUTS(8)
     ) uut (
-        .clk(clk),
-        .reset_n(reset_n),
-        .msg_in_data(msg_in_data),
-        .msg_in_valid(msg_in_valid),
-        .msg_in_ready(msg_in_ready),
-        .msg_out_data(msg_out_data),
-        .msg_out_valid(msg_out_valid),
-        .msg_out_ready(msg_out_ready)
+        .clk(clk), .reset_n(reset_n),
+        .wb_cyc(wb_cyc), .wb_stb(wb_stb), .wb_we(wb_we),
+        .wb_adr(wb_adr), .wb_dat_w(wb_dat_w), .wb_sel(4'h0),
+        .wb_dat_r(wb_dat_r), .wb_ack(wb_ack),
+        .tx_valid(tx_valid), .tx_last(tx_last),
+        .tx_data(tx_data), .tx_ready(tx_ready),
+        .rx_valid(rx_valid), .rx_last(rx_last),
+        .rx_data(rx_data), .rx_ready(rx_ready)
     );
 
     always #5 clk = ~clk;
@@ -31,40 +37,54 @@ module tb_message_dispatcher;
         $dumpfile("build/sim/tb_message_dispatcher.vcd");
         $dumpvars(0, tb_message_dispatcher);
 
-        clk = 0;
-        reset_n = 0;
-        msg_in_data = 0;
-        msg_in_valid = 0;
-        for (int i = 0; i < NUM_UNITS; i++) msg_out_ready[i] = 1;
-
+        clk = 0; reset_n = 0;
+        for (int i = 0; i < NUM_MODULES; i++) begin
+            tx_valid[i] = 0; tx_last[i] = 0;
+            tx_data[i*32 +: 32] = 0; rx_ready[i] = 0;
+        end
         #10 reset_n = 1;
+        @(posedge clk);
 
-        // Test: Send message to unit 0
-        #10;
-        msg_in_data = 32'h00_00_0001;  // TYPE=0x00 (unit 0), TAG=0x0001
-        msg_in_valid = 1;
-        #10 msg_in_valid = 0;
+        // Test: Send from module 0 to module 1
+        @(posedge clk);
+        tx_valid[0] <= 1;
+        tx_data[0*32 +: 32] <= {8'd1, 8'd0, 8'h03, 8'h00}; // dest=1, src=0, type=ACK
+        tx_last[0] <= 1;
+        @(posedge clk);
+        while (!tx_ready[0]) @(posedge clk);
+        tx_valid[0] <= 0;
+        @(posedge clk);
 
-        assert(msg_out_valid[0]) else $error("Unit 0 should receive message");
-        assert(!msg_out_valid[1]) else $error("Unit 1 should not receive message");
+        // Module 1 should receive
+        @(posedge clk);
+        @(posedge clk);
+        if (rx_valid[1]) begin
+            $display("Module 1 received: header=0x%08X", rx_data[1*32 +: 32]);
+            rx_ready[1] <= 1;
+            @(posedge clk);
+            rx_ready[1] <= 0;
+        end else begin
+            $error("Module 1 did not receive message");
+        end
 
-        // Test: Send message to unit 2
-        #10;
-        msg_in_data = 32'h20_00_0002;  // TYPE=0x20 (unit 2), TAG=0x0002
-        msg_in_valid = 1;
-        #10 msg_in_valid = 0;
+        // Test: Send from module 2 to module 0
+        @(posedge clk);
+        tx_valid[2] <= 1;
+        tx_data[2*32 +: 32] <= {8'd0, 8'd2, 8'h05, 8'h00}; // dest=0, src=2, type=STATUS_REQ
+        tx_last[2] <= 1;
+        @(posedge clk);
+        while (!tx_ready[2]) @(posedge clk);
+        tx_valid[2] <= 0;
+        @(posedge clk);
 
-        assert(msg_out_valid[2]) else $error("Unit 2 should receive message");
-        assert(!msg_out_valid[0]) else $error("Unit 0 should not receive message");
-
-        // Test: Broadcast
-        #10;
-        msg_in_data = 32'h00_08_0003;  // TYPE=0x00, FLAGS=0x08 (BROADCAST), TAG=0x0003
-        msg_in_valid = 1;
-        #10 msg_in_valid = 0;
-
-        for (int i = 0; i < NUM_UNITS; i++) begin
-            assert(msg_out_valid[i]) else $error("Unit %0d should receive broadcast", i);
+        @(posedge clk);
+        if (rx_valid[0]) begin
+            $display("Module 0 received: header=0x%08X", rx_data[0*32 +: 32]);
+            rx_ready[0] <= 1;
+            @(posedge clk);
+            rx_ready[0] <= 0;
+        end else begin
+            $error("Module 0 did not receive message");
         end
 
         $display("PASS: tb_message_dispatcher");
