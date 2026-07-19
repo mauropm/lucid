@@ -16,10 +16,9 @@ module rv32im_core (
     output logic        running
 );
 
-    typedef enum logic [1:0] {
+    typedef enum logic {
         STATE_FETCH,
-        STATE_EXEC,
-        STATE_LOAD
+        STATE_EXEC
     } state_t;
 
     state_t state, state_next;
@@ -50,7 +49,7 @@ module rv32im_core (
     logic [31:0] reg_wr_data;
     logic branch_taken;
     logic [31:0] branch_target;
-    logic is_load, is_store;
+    logic is_store;
 
     assign opcode = instr[6:0];
     assign funct3 = instr[14:12];
@@ -182,15 +181,6 @@ module rv32im_core (
         end
     end
 
-    // C3: 64-bit multiply for MULH family
-    logic signed [63:0] mul_ss;
-    logic signed [63:0] mul_su;
-    logic [63:0]        mul_uu;
-
-    assign mul_ss = $signed({1'b0, rs1_val}) * $signed({1'b0, rs2_val});
-    assign mul_su = $signed({1'b0, rs1_val}) * $signed({1'b0, rs2_val});
-    assign mul_uu = {1'b0, rs1_val} * {1'b0, rs2_val};
-
     logic signed [63:0] mulh_ss;
     logic signed [63:0] mulh_su;
     logic [63:0]        mulh_uu;
@@ -225,10 +215,8 @@ module rv32im_core (
         if (opcode == 7'b0010111) alu_a = pc;
     end
 
-    always_ff @(posedge clk or negedge reset_n) begin
-        if (!reset_n) begin
-            for (int i = 0; i < 32; i++) regfile[i] <= '0;
-        end else if (reg_wr_en && reg_wr_addr != 5'd0) begin
+    always_ff @(posedge clk) begin
+        if (reg_wr_en && reg_wr_addr != 5'd0) begin
             regfile[reg_wr_addr] <= reg_wr_data;
         end
     end
@@ -302,7 +290,6 @@ module rv32im_core (
         reg_wr_en   = 1'b0;
         reg_wr_addr = rd;
         reg_wr_data = '0;
-        is_load  = 1'b0;
         is_store = 1'b0;
         pc_next  = pc + 4;
 
@@ -325,7 +312,7 @@ module rv32im_core (
                             case (funct3)
                                 3'b000: begin // MUL
                                     reg_wr_en   = 1'b1;
-                                    reg_wr_data = $signed({1'b0, alu_a}) * $signed({1'b0, alu_b});
+                                    reg_wr_data = rs1_val * rs2_val;
                                 end
                                 3'b001: begin // MULH
                                     reg_wr_en   = 1'b1;
@@ -372,7 +359,6 @@ module rv32im_core (
                     end
 
                     7'b0000011: begin // Load
-                        is_load = 1'b1;
                         wb_cyc  = 1'b1;
                         wb_stb  = 1'b1;
                         wb_adr  = alu_result;
@@ -472,10 +458,6 @@ module rv32im_core (
                         pc_next = pc + 4;
                     end
                 endcase
-            end
-
-            STATE_LOAD: begin
-                state_next = STATE_FETCH;
             end
 
             default: begin

@@ -2,6 +2,8 @@
 // ========================
 `timescale 1ns/1ps
 
+import lucid_msg_pkg::*;
+
 module tb_message_system;
     parameter int NUM_MODULES = 4;
 

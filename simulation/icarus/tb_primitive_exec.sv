@@ -75,7 +75,7 @@ module tb_primitive_exec;
     endtask
 
     task node_write(input int nid, input int fid, input [31:0] data);
-        reg_write(32'h20 + nid * 24 + fid * 4, data);
+        reg_write(32'h20 + nid * 32 + fid * 4, data);
     endtask
 
     function [31:0] encode_header(
@@ -190,7 +190,7 @@ module tb_primitive_exec;
         node_write(1, 4, 32'h00000004);
         node_write(2, 0, encode_header(2'b00, 8'h16, 6'd2, 6'd0, 10'd0)); // LT
         node_write(2, 4, 32'd0);
-        node_write(2, 5, 32'h00000001);
+        node_write(2, 5, 32'h00000100);
 
         reg_write(32'h08, 32'd2);
         reg_write(32'h0C, 32'd3);

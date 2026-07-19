@@ -26,7 +26,7 @@ module tb_scheme;
     endtask
 
     task node_write(input int nid, input int fid, input [31:0] data);
-        reg_write(32'h20 + nid * 24 + fid * 4, data);
+        reg_write(32'h20 + nid * 32 + fid * 4, data);
     endtask
 
     task run_scheme(input string name, input [31:0] expected);
@@ -85,7 +85,7 @@ module tb_scheme;
         node_write(1, 0, 32'h00400000); node_write(1, 1, 32'h00000001); node_write(1, 4, 32'h00000008);
         node_write(2, 0, 32'h00400000); node_write(2, 1, 32'h00000002); node_write(2, 4, 32'h00000008);
         node_write(3, 0, 32'h0C030000); node_write(3, 4, 32'h00000000);
-        node_write(3, 5, 32'h00000201); // src0=0, src1=1, src2=2
+        node_write(3, 5, 32'h00020100); // src0=0, src1=1, src2=2
         reg_write(32'h08, 32'd3); reg_write(32'h0C, 32'd4);
         run_scheme("(if #t 1 2)", 1);
 
@@ -95,7 +95,7 @@ module tb_scheme;
         node_write(0, 0, 32'h00400000); node_write(0, 1, 32'h00000003); node_write(0, 4, 32'h00000004);
         node_write(1, 0, 32'h00400000); node_write(1, 1, 32'h00000005); node_write(1, 4, 32'h00000004);
         node_write(2, 0, 32'h05820000); node_write(2, 4, 32'h00000000);
-        node_write(2, 5, 32'h00000001); // src0=0, src1=1
+        node_write(2, 5, 32'h00000100); // src0=0, src1=1
         reg_write(32'h08, 32'd2); reg_write(32'h0C, 32'd3);
         run_scheme("(< 3 5)", 1);
 

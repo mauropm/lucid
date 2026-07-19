@@ -31,7 +31,6 @@ module message_dispatcher #(
     logic [31:0] ctrl;
     logic [31:0] status;
 
-    // H8: Statistics - count complete messages (on last word)
     logic [31:0] msg_count [NUM_MODULES];
     logic [31:0] err_count [NUM_MODULES];
 
@@ -39,6 +38,8 @@ module message_dispatcher #(
     logic [ROUTER_INPUTS*32-1:0] r_in_data;
     logic [ROUTER_OUTPUTS-1:0] r_out_valid, r_out_last, r_out_ready;
     logic [ROUTER_OUTPUTS*32-1:0] r_out_data;
+
+    logic any_err;
 
     message_router #(
         .NUM_INPUTS(ROUTER_INPUTS),
@@ -81,10 +82,16 @@ module message_dispatcher #(
         end
     endgenerate
 
+    always_comb begin
+        any_err = 1'b0;
+        for (int m = 0; m < NUM_MODULES; m++) begin
+            if (|err_count[m]) any_err = 1'b1;
+        end
+    end
+
     assign wb_ack = wb_stb && wb_cyc;
 
-    // H8: Drive status from router state
-    assign status = {24'h0, |r_out_valid, |r_in_valid, |err_count, 1'b0};
+    assign status = {24'h0, |r_out_valid, |r_in_valid, any_err, 1'b0};
 
     always_ff @(posedge clk or negedge reset_n) begin
         if (!reset_n) begin

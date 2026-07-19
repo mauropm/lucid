@@ -21,6 +21,11 @@ module fifo #(
     localparam int CNT_WIDTH = $clog2(DEPTH) + 1;
     localparam int PTR_WIDTH = $clog2(DEPTH);
 
+    generate
+        if (DEPTH != (1 << $clog2(DEPTH)))
+            $error("FIFO DEPTH must be a power of two (got %0d)", DEPTH);
+    endgenerate
+
     logic [WIDTH-1:0] mem [0:DEPTH-1];
     logic [CNT_WIDTH-1:0] wr_ptr, rd_ptr;
     logic [WIDTH-1:0] rd_data_q;

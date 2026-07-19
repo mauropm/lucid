@@ -25,7 +25,8 @@ module heap_controller #(
     logic alloc_active;
     int tmp_wa;
 
-    // H9: Aligned size (round up to 4 bytes)
+    logic init_done;
+
     wire [15:0] alloc_size_aligned = (alloc_size + 15) & ~15;
 
     always_ff @(posedge clk or negedge reset_n) begin
@@ -34,15 +35,19 @@ module heap_controller #(
             alloc_ack  <= 1'b0;
             alloc_ptr  <= '0;
             alloc_active <= 1'b0;
-            mem[0] <= 32'h48454150;
-            mem[1] <= HEAP_SIZE;
-            mem[3] <= 32'd0;
-            mem[4] <= 32'd0;
-            mem[5] <= 32'd0;
+            init_done  <= 1'b0;
         end else begin
             alloc_ack <= 1'b0;
 
-            // H9: Accept one request per rising edge of alloc_valid
+            if (!init_done) begin
+                mem[0] <= 32'h48454150;
+                mem[1] <= HEAP_SIZE;
+                mem[3] <= 32'd0;
+                mem[4] <= 32'd0;
+                mem[5] <= 32'd0;
+                init_done <= 1'b1;
+            end
+
             if (alloc_valid && !alloc_active) begin
                 alloc_active <= 1'b1;
                 if (free_ptr + alloc_size_aligned <= HEAP_SIZE) begin
@@ -58,8 +63,6 @@ module heap_controller #(
             end
             if (!alloc_valid)
                 alloc_active <= 1'b0;
-
-            // H9: Remove mem[2] mirror (was second write port)
         end
     end
 

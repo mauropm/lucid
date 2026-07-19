@@ -60,7 +60,7 @@ module graph_scheduler_fp #(
 
     typedef enum logic [3:0] {
         S_IDLE, S_SCAN, S_EXEC, S_DISPATCH, S_DISP_D0, S_DISP_D1, S_DISP_D2,
-        S_WAIT_MSG, S_WAIT_RES, S_UPD_SCAN, S_UPD_NEXT, S_DONE
+        S_WAIT_MSG, S_WAIT_NID, S_WAIT_RES, S_UPD_SCAN, S_UPD_NEXT, S_DONE
     } fsm_t;
 
     fsm_t state;
@@ -69,8 +69,6 @@ module graph_scheduler_fp #(
     logic [NODE_ID_W-1:0] scan_cnt;
     logic [DEP_W-1:0] upd_dep_mask;
     logic [NODE_ID_W-1:0] upd_cur;
-    logic push_q, pop_q;
-    logic [NODE_ID_W-1:0] push_q_id;
     logic [NODE_ID_W-1:0] exec_id;
     int tmp_nid, tmp_fid;
     logic tmp_found;
@@ -83,7 +81,6 @@ module graph_scheduler_fp #(
             done_cnt <= '0; start_pulse <= 1'b0;
             status <= 32'd2; q_overflow <= 1'b0;
             state <= S_IDLE; scan_cnt <= '0;
-            pop_q <= 1'b0; push_q <= 1'b0;
             upd_dep_mask <= '0; upd_cur <= '0; exec_id <= '0;
             q_wptr <= '0; q_rptr <= '0; q_cnt <= '0;
             msg_tx_valid <= 1'b0; msg_tx_last <= 1'b0; msg_tx_data <= '0;
@@ -105,7 +102,6 @@ module graph_scheduler_fp #(
             end
         end else begin
             start_pulse <= 1'b0;
-            pop_q <= 1'b0; push_q <= 1'b0;
             msg_tx_valid <= 1'b0;
 
             if (reg_cyc && reg_stb && reg_we) begin
@@ -118,20 +114,22 @@ module graph_scheduler_fp #(
                         default: ;
                     endcase
                 end
-                if (reg_adr[7:0] >= 8'h20) begin
-                    tmp_nid = (reg_adr[7:2] - 6'd8) / 6;
-                    tmp_fid = (reg_adr[7:2] - 6'd8) % 6;
+                // Node field write (address >= 0x20, 8-word stride)
+                if (reg_adr[11:0] >= 12'h020) begin
+                    tmp_nid = (reg_adr[11:0] - 12'h020) >> 5;
+                    tmp_fid = reg_adr[4:2];
                     if (tmp_nid < NUM_NODES) begin
                         case (tmp_fid)
                             0: {node_state[tmp_nid], node_opcode[tmp_nid], node_numinp[tmp_nid], node_rdyinp[tmp_nid], node_flags[tmp_nid]} <= reg_dat_w;
                             1: node_imm0[tmp_nid] <= reg_dat_w;
                             2: node_imm1[tmp_nid] <= reg_dat_w;
                             3: node_result[tmp_nid] <= reg_dat_w;
-                            4: node_dep[tmp_nid] <= reg_dat_w[DEP_W-1:0];
+                            4: node_dep[tmp_nid][31:0] <= reg_dat_w;
                             5: begin
                                 node_src0[tmp_nid] <= reg_dat_w[7:0];
                                 node_src1[tmp_nid] <= reg_dat_w[15:8];
                             end
+                            6: node_dep[tmp_nid][63:32] <= reg_dat_w;
                             default: ;
                         endcase
                     end
@@ -152,7 +150,6 @@ module graph_scheduler_fp #(
                         if (node_numinp[scan_cnt] == 0) begin
                             node_state[scan_cnt] <= 2'b10;
                             if (!q_full) begin
-                                push_q <= 1'b1; push_q_id <= scan_cnt;
                                 queue[q_wptr] <= scan_cnt;
                                 q_wptr <= q_wptr + 1'b1;
                                 q_cnt <= q_cnt + 1'b1;
@@ -167,7 +164,6 @@ module graph_scheduler_fp #(
                 S_EXEC: begin
                     if (!q_empty) begin
                         exec_id <= pop_q_id;
-                        pop_q <= 1'b1;
                         q_rptr <= q_rptr + 1'b1;
                         q_cnt <= q_cnt - 1'b1;
                         state <= S_DISPATCH;
@@ -220,6 +216,15 @@ module graph_scheduler_fp #(
                     msg_rx_ready <= 1'b1;
                     if (msg_rx_valid) begin
                         msg_rx_ready <= 1'b0;
+                        state <= S_WAIT_NID;
+                    end
+                end
+
+                S_WAIT_NID: begin
+                    msg_rx_ready <= 1'b1;
+                    if (msg_rx_valid) begin
+                        msg_rx_ready <= 1'b0;
+                        tmp_res_nid <= msg_rx_data[31:24];
                         state <= S_WAIT_RES;
                     end
                 end
@@ -227,7 +232,6 @@ module graph_scheduler_fp #(
                 S_WAIT_RES: begin
                     msg_rx_ready <= 1'b1;
                     if (msg_rx_valid && msg_rx_last) begin
-                        tmp_res_nid = msg_rx_data[NODE_ID_W-1+24:24];
                         node_result[tmp_res_nid] <= msg_rx_data;
                         node_state[tmp_res_nid] <= 2'b11;
                         done_cnt <= done_cnt + 1'b1;
@@ -266,7 +270,6 @@ module graph_scheduler_fp #(
                         if (node_rdyinp[upd_cur] + 1 >= node_numinp[upd_cur]) begin
                             node_state[upd_cur] <= 2'b10;
                             if (!q_full) begin
-                                push_q <= 1'b1; push_q_id <= upd_cur;
                                 queue[q_wptr] <= upd_cur;
                                 q_wptr <= q_wptr + 1'b1;
                                 q_cnt <= q_cnt + 1'b1;
@@ -287,6 +290,8 @@ module graph_scheduler_fp #(
 
     always_comb begin
         reg_dat_r = '0;
+        tmp_rnid = '0;
+        tmp_rfid = '0;
         if (reg_cyc && reg_stb) begin
             case (reg_adr[5:2])
                 4'd0: reg_dat_r = ctrl;
@@ -295,9 +300,9 @@ module graph_scheduler_fp #(
                 4'd3: reg_dat_r = node_cnt;
                 4'd4: reg_dat_r = done_cnt;
                 default: begin
-                    if (reg_adr[7:0] >= 8'h20) begin
-                        tmp_rnid = (reg_adr[7:2] - 6'd8) / 6;
-                        tmp_rfid = (reg_adr[7:2] - 6'd8) % 6;
+                    if (reg_adr[11:0] >= 12'h020) begin
+                        tmp_rnid = (reg_adr[11:0] - 12'h020) >> 5;
+                        tmp_rfid = reg_adr[4:2];
                         if (tmp_rnid < NUM_NODES) begin
                             case (tmp_rfid)
                                 0: reg_dat_r = {node_state[tmp_rnid], node_opcode[tmp_rnid], node_numinp[tmp_rnid], node_rdyinp[tmp_rnid], node_flags[tmp_rnid]};
@@ -305,6 +310,8 @@ module graph_scheduler_fp #(
                                 2: reg_dat_r = node_imm1[tmp_rnid];
                                 3: reg_dat_r = node_result[tmp_rnid];
                                 4: reg_dat_r = node_dep[tmp_rnid][31:0];
+                                5: reg_dat_r = {16'h0, node_src1[tmp_rnid], node_src0[tmp_rnid]};
+                                6: reg_dat_r = node_dep[tmp_rnid][63:32];
                                 default: reg_dat_r = '0;
                             endcase
                         end

@@ -15,7 +15,7 @@ module graph_scheduler_parallel #(
     localparam int DEP_W = NUM_NODES;
     localparam int Q_CNT_W = $clog2(Q_DEPTH) + 1;
 
-    typedef enum logic [2:0] { S_IDLE, S_SCAN, S_EXEC, S_BACKUP, S_UPD, S_DONE } fsm_t;
+    typedef enum logic [2:0] { S_IDLE, S_SCAN, S_EXEC, S_BACKUP, S_UPD_SCAN, S_UPD_NEXT, S_DONE } fsm_t;
     fsm_t state;
 
     logic [31:0] ctrl, status, root_id, node_cnt, done_cnt, perf_conc;
@@ -62,7 +62,7 @@ module graph_scheduler_parallel #(
     logic tmp_found;
     int tmp_rnid, tmp_rfid;
 
-    // C9: Single queue process
+    // Queue process
     always_ff @(posedge clk or negedge reset_n) begin
         if (!reset_n) begin
             q_wptr <= '0; q_rptr <= '0; q_cnt <= '0;
@@ -74,25 +74,13 @@ module graph_scheduler_parallel #(
             if (pop_q && !q_empty) begin
                 q_rptr <= q_rptr + 1'b1;
             end
-            if (pop_q2 && !q_empty && (q_cnt > 1 || (push_q && !q_full))) begin
+            if (pop_q2 && !q_empty && q_cnt > 1) begin
                 q_rptr <= q_rptr + 1'b1;
             end
-
-            // Count management
-            if (push_q && !q_full && (pop_q && !q_empty) && (pop_q2 && !q_empty && q_cnt > 1))
-                q_cnt <= q_cnt + 1 - 2; // +1 push, -2 dual pop
-            else if (push_q && !q_full && (pop_q && !q_empty))
-                q_cnt <= q_cnt; // +1 push, -1 pop
-            else if (push_q && !q_full && (pop_q2 && !q_empty && q_cnt > 1))
-                q_cnt <= q_cnt - 1; // +1 push, -1 second pop
-            else if (push_q && !q_full)
-                q_cnt <= q_cnt + 1'b1;
-            else if ((pop_q && !q_empty) && (pop_q2 && !q_empty && q_cnt > 1))
-                q_cnt <= q_cnt - 2; // -2 dual pop
-            else if (pop_q && !q_empty)
-                q_cnt <= q_cnt - 1'b1;
-            else if (pop_q2 && !q_empty && q_cnt > 1)
-                q_cnt <= q_cnt - 1'b1;
+            q_cnt <= q_cnt
+                + (push_q && !q_full ? 1'b1 : '0)
+                - (pop_q  && !q_empty ? 1'b1 : '0)
+                - (pop_q2 && !q_empty && q_cnt > 1 ? 1'b1 : '0);
         end
     end
 
@@ -137,21 +125,22 @@ module graph_scheduler_parallel #(
                         default: ;
                     endcase
                 end
-                // Node field write (address >= 0x20)
-                if (reg_adr[7:0] >= 8'h20) begin
-                    tmp_nid = (reg_adr[7:2] - 6'd8) / 6;
-                    tmp_fid = (reg_adr[7:2] - 6'd8) % 6;
+                // Node field write (address >= 0x20, 8-word stride)
+                if (reg_adr[11:0] >= 12'h020) begin
+                    tmp_nid = (reg_adr[11:0] - 12'h020) >> 5;
+                    tmp_fid = reg_adr[4:2];
                     if (tmp_nid < NUM_NODES) begin
                         case (tmp_fid)
                             0: {node_state[tmp_nid], node_opcode[tmp_nid], node_numinp[tmp_nid], node_rdyinp[tmp_nid], node_flags[tmp_nid]} <= reg_dat_w;
                             1: node_imm0[tmp_nid] <= reg_dat_w;
                             2: node_imm1[tmp_nid] <= reg_dat_w;
                             3: node_result[tmp_nid] <= reg_dat_w;
-                            4: node_dep[tmp_nid] <= reg_dat_w[DEP_W-1:0];
+                            4: node_dep[tmp_nid][31:0] <= reg_dat_w;
                             5: begin
                                 node_src0[tmp_nid] <= reg_dat_w[7:0];
                                 node_src1[tmp_nid] <= reg_dat_w[15:8];
                             end
+                            6: node_dep[tmp_nid][63:32] <= reg_dat_w;
                             default: ;
                         endcase
                     end
@@ -198,7 +187,6 @@ module graph_scheduler_parallel #(
                             8'h17: node_result[pop_id] <= {31'h0, $signed(node_op0[pop_id]) > $signed(node_op1[pop_id])};
                             8'h18: node_result[pop_id] <= {31'h0, $signed(node_op0[pop_id]) <= $signed(node_op1[pop_id])};
                             8'h19: node_result[pop_id] <= {31'h0, $signed(node_op0[pop_id]) >= $signed(node_op1[pop_id])};
-                            8'h30: node_result[pop_id] <= node_op0[pop_id] != 0 ? node_op1[pop_id] : node_op1[pop_id];
                             default: node_result[pop_id] <= node_imm0[pop_id];
                         endcase
                         node_state[pop_id] <= 2'b11;
@@ -216,7 +204,7 @@ module graph_scheduler_parallel #(
                         end
                         upd_src <= pop_id;
                         upd_mask <= node_dep[pop_id];
-                        state <= S_UPD;
+                        state <= S_UPD_SCAN;
                     end else begin
                         // Queue empty - check if done or need to wait
                         if (node_state[root_id] == 2'b11)
@@ -252,12 +240,11 @@ module graph_scheduler_parallel #(
                         upd_src <= backup_id;
                         upd_mask <= node_dep[backup_id];
                     end
-                    state <= S_UPD;
+                     state <= S_UPD_SCAN;
                 end
 
-                S_UPD: begin
+                S_UPD_SCAN: begin
                     if (upd_mask != 0) begin
-                        // H2: Generated priority encoder
                         tmp_found = 1'b0;
                         for (int b = 0; b < DEP_W; b++) begin
                             if (!tmp_found && upd_mask[b]) begin
@@ -266,8 +253,17 @@ module graph_scheduler_parallel #(
                             end
                         end
                         upd_mask <= upd_mask & (upd_mask - 1);
+                        state <= S_UPD_NEXT;
+                    end else if (backup_valid) begin
+                        state <= S_BACKUP;
+                    end else begin
+                        if (node_state[root_id] == 2'b11) state <= S_DONE;
+                        else state <= S_EXEC;
+                    end
+                end
 
-                        // C5: Source-based slot assignment (applied next cycle)
+                S_UPD_NEXT: begin
+                    if (upd_cur < NUM_NODES) begin
                         if (node_src0[upd_cur] == upd_src)
                             node_op0[upd_cur] <= node_result[upd_src];
                         else if (node_src1[upd_cur] == upd_src)
@@ -279,12 +275,8 @@ module graph_scheduler_parallel #(
                                 push_q <= 1'b1; push_data <= upd_cur;
                             end else q_overflow <= 1'b1;
                         end
-                    end else if (backup_valid) begin
-                        state <= S_BACKUP;
-                    end else begin
-                        if (node_state[root_id] == 2'b11) state <= S_DONE;
-                        else state <= S_EXEC;
                     end
+                    state <= S_UPD_SCAN;
                 end
 
                 S_DONE: begin end
@@ -298,6 +290,8 @@ module graph_scheduler_parallel #(
 
     always_comb begin
         reg_dat_r = '0;
+        tmp_rnid = '0;
+        tmp_rfid = '0;
         if (reg_cyc && reg_stb) begin
             case (reg_adr[5:2])
                 4'd0: reg_dat_r = ctrl;
@@ -307,9 +301,9 @@ module graph_scheduler_parallel #(
                 4'd4: reg_dat_r = done_cnt;
                 4'd5: reg_dat_r = perf_conc;
                 default: begin
-                    if (reg_adr[7:0] >= 8'h20) begin
-                        tmp_rnid = (reg_adr[7:2] - 6'd8) / 6;
-                        tmp_rfid = (reg_adr[7:2] - 6'd8) % 6;
+                    if (reg_adr[11:0] >= 12'h020) begin
+                        tmp_rnid = (reg_adr[11:0] - 12'h020) >> 5;
+                        tmp_rfid = reg_adr[4:2];
                         if (tmp_rnid < NUM_NODES) begin
                             case (tmp_rfid)
                                 0: reg_dat_r = {node_state[tmp_rnid], node_opcode[tmp_rnid], node_numinp[tmp_rnid], node_rdyinp[tmp_rnid], node_flags[tmp_rnid]};
@@ -317,6 +311,8 @@ module graph_scheduler_parallel #(
                                 2: reg_dat_r = node_imm1[tmp_rnid];
                                 3: reg_dat_r = node_result[tmp_rnid];
                                 4: reg_dat_r = node_dep[tmp_rnid][31:0];
+                                5: reg_dat_r = {16'h0, node_src1[tmp_rnid], node_src0[tmp_rnid]};
+                                6: reg_dat_r = node_dep[tmp_rnid][63:32];
                                 default: reg_dat_r = '0;
                             endcase
                         end

@@ -1,11 +1,6 @@
 `default_nettype none
 
-module wishbone_bus #(
-    parameter int NUM_SLAVES = 3
-) (
-    input  logic        clk,
-    input  logic        reset_n,
-
+module wishbone_bus (
     input  logic        m_cyc,
     input  logic        m_stb,
     input  logic        m_we,
@@ -34,9 +29,9 @@ module wishbone_bus #(
 );
 
     wire [2:0] slave_sel;
-    assign slave_sel[0] = (m_adr[31:16] == 16'h0000);
-    assign slave_sel[1] = (m_adr[31:16] == 16'h0001);
-    assign slave_sel[2] = (m_adr[31:16] == 16'h0002);
+    assign slave_sel[0] = (m_adr[31:12] == 20'h00000);
+    assign slave_sel[1] = (m_adr[31:12] == 20'h00001);
+    assign slave_sel[2] = (m_adr[31:12] == 20'h00002);
 
     wire any_sel = |slave_sel;
 

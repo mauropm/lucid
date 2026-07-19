@@ -26,7 +26,7 @@ module tb_graph_scheduler;
     endtask
 
     task node_write(input int nid, input int fid, input [31:0] data);
-        reg_write(32'h20 + nid * 24 + fid * 4, data);
+        reg_write(32'h20 + nid * 32 + fid * 4, data);
     endtask
 
     function [31:0] encode_header(

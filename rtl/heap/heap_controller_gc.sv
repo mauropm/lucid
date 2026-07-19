@@ -17,7 +17,7 @@ module heap_controller_gc #(
 
     input  logic        gc_mem_rd_en,
     input  logic        gc_mem_wr_en,
-    input  logic [31:0] gc_mem_addr,
+    input  logic [15:0] gc_mem_addr,
     input  logic [31:0] gc_mem_wdata,
     output logic [31:0] gc_mem_rdata,
 
@@ -30,12 +30,17 @@ module heap_controller_gc #(
     output logic [31:0] heap_avail
 );
 
-    logic [31:0] mem [0:HEAP_SIZE/4 - 1];
+    localparam int HEAP_WORDS = HEAP_SIZE / 4;
+    localparam int ADDR_W = $clog2(HEAP_WORDS);
+
+    logic [31:0] mem [0:HEAP_WORDS - 1];
 
     logic [31:0] free_ptr;
     logic gc_active;
     logic alloc_active;
     int tmp_wa;
+
+    logic init_done;
 
     wire [15:0] alloc_size_aligned = (alloc_size + 15) & ~15;
 
@@ -48,19 +53,24 @@ module heap_controller_gc #(
             gc_active <= 1'b0;
             gc_busy <= 1'b0;
             alloc_active <= 1'b0;
-            mem[0] <= 32'h48454150;
-            mem[1] <= HEAP_SIZE;
-            mem[3] <= 32'd0;
-            mem[4] <= 32'd0;
+            init_done <= 1'b0;
         end else begin
             alloc_ack <= 1'b0;
             alloc_oom <= 1'b0;
 
-            if (gc_mem_rd_en)
-                gc_mem_rdata <= mem[gc_mem_addr];
+            if (!init_done) begin
+                mem[0] <= 32'h48454150;
+                mem[1] <= HEAP_SIZE;
+                mem[3] <= 32'd0;
+                mem[4] <= 32'd0;
+                init_done <= 1'b1;
+            end
 
-            if (gc_mem_wr_en)
-                mem[gc_mem_addr] <= gc_mem_wdata;
+            if (gc_mem_rd_en && gc_mem_addr[ADDR_W-1:0] < HEAP_WORDS)
+                gc_mem_rdata <= mem[gc_mem_addr[ADDR_W-1:0]];
+
+            if (gc_mem_wr_en && gc_mem_addr[ADDR_W-1:0] < HEAP_WORDS)
+                mem[gc_mem_addr[ADDR_W-1:0]] <= gc_mem_wdata;
 
             if (gc_trigger && !gc_active) begin
                 gc_active <= 1'b1;

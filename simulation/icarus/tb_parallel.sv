@@ -17,7 +17,7 @@ module tb_parallel;
     endtask
 
     task nw(input int n, f, [31:0] d);
-        reg_write(32'h20 + n*24 + f*4, d);
+        reg_write(32'h20 + n*32 + f*4, d);
     endtask
 
     initial begin

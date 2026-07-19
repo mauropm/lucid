@@ -15,7 +15,7 @@ module tb_gc;
         .alloc_flags(alloc_flags), .alloc_size(alloc_size),
         .alloc_ptr(alloc_ptr), .alloc_ack(alloc_ack), .alloc_oom(alloc_oom),
         .gc_mem_rd_en(1'b0), .gc_mem_wr_en(1'b0),
-        .gc_mem_addr(32'h0), .gc_mem_wdata(32'h0),
+        .gc_mem_addr(16'h0), .gc_mem_wdata(32'h0),
         .gc_mem_rdata(),
         .gc_trigger(gc_trigger), .gc_busy(gc_busy), .gc_done(gc_done),
         .heap_free_ptr(heap_free_ptr), .heap_used(heap_used), .heap_avail(heap_avail)

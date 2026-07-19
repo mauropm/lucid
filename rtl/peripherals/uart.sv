@@ -20,11 +20,12 @@ module uart #(
 );
 
     logic [31:0] ctrl;
-    logic [31:0] baud_div;
+    logic [15:0] baud_div;
 
     logic tx_busy;
     logic rx_ready;
     logic rx_overrun;
+    logic rx_overrun_clr;
 
     logic tx_fifo_full, tx_fifo_empty;
     logic [7:0] tx_fifo_data;
@@ -43,13 +44,18 @@ module uart #(
     always_ff @(posedge clk or negedge reset_n) begin
         if (!reset_n) begin
             ctrl     <= '0;
-            baud_div <= 32'd868;
-        end else if (wb_wr) begin
-            case (wb_adr[4:2])
-                3'h0: ctrl     <= wb_dat_w;
-                3'h1: baud_div <= wb_dat_w;
-                default: ;
-            endcase
+            baud_div <= 16'd868;
+            rx_overrun_clr <= 1'b0;
+        end else begin
+            rx_overrun_clr <= 1'b0;
+            if (wb_wr) begin
+                case (wb_adr[4:2])
+                    3'h0: ctrl     <= wb_dat_w;
+                    3'h1: baud_div <= wb_dat_w[15:0];
+                    3'h2: if (wb_dat_w[6]) rx_overrun_clr <= 1'b1;
+                    default: ;
+                endcase
+            end
         end
     end
 
@@ -63,7 +69,7 @@ module uart #(
             3'h0: wb_dat_r = ctrl;
             3'h1: wb_dat_r = baud_div;
             3'h2: wb_dat_r = {28'h0, tx_busy, rx_ready, tx_fifo_full, rx_overrun};
-            3'h4: wb_dat_r = {24'h0, rx_read_data_r};
+            3'h4: wb_dat_r = rx_read_pending ? {24'h0, rx_fifo_data} : {24'h0, rx_read_data_r};
             3'h5: wb_dat_r = {27'h0, rx_fifo_count};
             default: wb_dat_r = '0;
         endcase
@@ -149,7 +155,7 @@ module uart #(
             baud_tick_cnt <= '0;
             baud_tick <= 1'b0;
         end else begin
-            if (baud_tick_cnt >= baud_div[15:0] - 1) begin
+            if (baud_tick_cnt >= baud_div - 1) begin
                 baud_tick_cnt <= '0;
                 baud_tick <= 1'b1;
             end else begin
@@ -230,17 +236,19 @@ module uart #(
         end else begin
             rx_fifo_wr     <= 1'b0;
             rx_data_byte_valid <= 1'b0;
+            if (rx_overrun_clr)
+                rx_overrun <= 1'b0;
             case (rx_state)
                 RX_IDLE: begin
                     if (!rx_sync2 && ctrl[0]) begin
-                        rx_tick_cnt <= baud_div[15:0] >> 1;
+                        rx_tick_cnt <= baud_div >> 1;
                         rx_state    <= RX_START;
                     end
                 end
                 RX_START: begin
-                    if (baud_tick) begin
+                    if (rx_tick_cnt == 0) begin
                         if (!rx_sync2) begin
-                            rx_tick_cnt <= baud_div[15:0] - 1;
+                            rx_tick_cnt <= baud_div - 1;
                             rx_bit_cnt  <= 4'd0;
                             rx_state    <= RX_DATA;
                         end else begin
@@ -251,10 +259,10 @@ module uart #(
                     end
                 end
                 RX_DATA: begin
-                    if (baud_tick) begin
+                    if (rx_tick_cnt == 0) begin
                         rx_shift   <= {rx_sync2, rx_shift[7:1]};
                         rx_bit_cnt <= rx_bit_cnt + 1'b1;
-                        rx_tick_cnt <= baud_div[15:0] - 1;
+                        rx_tick_cnt <= baud_div - 1;
                         if (rx_bit_cnt == 4'd7)
                             rx_state <= RX_STOP;
                     end else begin
@@ -262,7 +270,7 @@ module uart #(
                     end
                 end
                 RX_STOP: begin
-                    if (baud_tick) begin
+                    if (rx_tick_cnt == 0) begin
                         if (rx_sync2) begin
                             rx_data_byte_valid <= 1'b1;
                             rx_data_byte <= rx_shift;
