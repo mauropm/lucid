@@ -40,6 +40,8 @@ module tb_platform;
 
     // Wishbone bus
     wishbone_bus bus (
+        .clk(clk),
+        .reset_n(reset_n),
         .m_cyc(wb_cyc),
         .m_stb(wb_stb),
         .m_we(wb_we),

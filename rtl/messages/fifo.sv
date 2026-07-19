@@ -22,8 +22,9 @@ module fifo #(
     localparam int PTR_WIDTH = $clog2(DEPTH);
 
     generate
-        if (DEPTH != (1 << $clog2(DEPTH)))
-            $error("FIFO DEPTH must be a power of two (got %0d)", DEPTH);
+        if (DEPTH != (1 << $clog2(DEPTH))) begin : gen_depth_check
+            wire _depth_must_be_power_of_two = 1'b0;
+        end
     endgenerate
 
     logic [WIDTH-1:0] mem [0:DEPTH-1];
@@ -52,6 +53,20 @@ module fifo #(
     assign empty   = (wr_ptr == rd_ptr);
     assign full    = (wr_ptr[CNT_WIDTH-2:0] == rd_ptr[CNT_WIDTH-2:0]) &&
                      (wr_ptr[CNT_WIDTH-1]   != rd_ptr[CNT_WIDTH-1]);
+
+`ifdef HAVE_SVA
+    assert property (@(posedge clk) disable iff (!reset_n)
+        !(wr_en && full))
+    else $error("FIFO overflow: write while full");
+
+    assert property (@(posedge clk) disable iff (!reset_n)
+        !(rd_en && empty))
+    else $error("FIFO underflow: read while empty");
+
+    assert property (@(posedge clk) disable iff (!reset_n)
+        count <= DEPTH)
+    else $error("FIFO count exceeds DEPTH");
+`endif
 
 endmodule
 

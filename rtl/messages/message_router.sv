@@ -49,7 +49,7 @@ module message_router #(
             end
             assign any_request = |request;
 
-            // H7: Parameterized priority grant
+            // Priority grant (fixed priority, lowest index wins)
             wire [NUM_INPUTS-1:0] grant;
             assign grant[0] = request[0];
             genvar g;
@@ -73,7 +73,6 @@ module message_router #(
                     if (busy[o]) begin
                         if (out_ready[o]) begin
                             if (lock[o]) begin
-                                // H7: Hold lock during bubbles - wait for next word
                                 logic found;
                                 found = 1'b0;
                                 for (int i = 0; i < NUM_INPUTS; i++) begin
@@ -88,7 +87,6 @@ module message_router #(
                                         found = 1'b1;
                                     end
                                 end
-                                // H7: Do NOT terminate on bubble - hold busy/lock
                             end else begin
                                 busy[o] <= 1'b0;
                                 conn[o] <= '0;

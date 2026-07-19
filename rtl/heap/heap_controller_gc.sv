@@ -35,6 +35,8 @@ module heap_controller_gc #(
 
     logic [31:0] mem [0:HEAP_WORDS - 1];
 
+    localparam logic [31:0] HEAP_MAGIC = 32'h48454150;
+
     logic [31:0] free_ptr;
     logic gc_active;
     logic alloc_active;
@@ -59,7 +61,7 @@ module heap_controller_gc #(
             alloc_oom <= 1'b0;
 
             if (!init_done) begin
-                mem[0] <= 32'h48454150;
+                mem[0] <= HEAP_MAGIC;
                 mem[1] <= HEAP_SIZE;
                 mem[3] <= 32'd0;
                 mem[4] <= 32'd0;

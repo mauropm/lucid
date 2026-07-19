@@ -44,7 +44,7 @@ module uart #(
     always_ff @(posedge clk or negedge reset_n) begin
         if (!reset_n) begin
             ctrl     <= '0;
-            baud_div <= 16'd868;
+            baud_div <= 16'd938;
             rx_overrun_clr <= 1'b0;
         end else begin
             rx_overrun_clr <= 1'b0;

@@ -1,6 +1,9 @@
 `default_nettype none
 
 module wishbone_bus (
+    input  logic        clk,
+    input  logic        reset_n,
+
     input  logic        m_cyc,
     input  logic        m_stb,
     input  logic        m_we,
@@ -53,14 +56,22 @@ module wishbone_bus (
     assign s2_dat_w = m_dat_w;
     assign s2_sel   = m_sel;
 
-    // H5: Default slave returns all-ones data and immediate ack for unmapped addresses
+    // H5: Default slave returns all-ones data and registered ack for unmapped addresses
+    logic default_ack;
+    always_ff @(posedge clk or negedge reset_n) begin
+        if (!reset_n)
+            default_ack <= 1'b0;
+        else
+            default_ack <= m_stb && m_cyc && !any_sel;
+    end
+
     assign m_dat_r = slave_sel[0] ? s0_dat_r :
                      slave_sel[1] ? s1_dat_r :
                      slave_sel[2] ? s2_dat_r : 32'hFFFF_FFFF;
     assign m_ack   = any_sel ? (slave_sel[0] ? s0_ack :
                                 slave_sel[1] ? s1_ack :
                                                s2_ack) :
-                               (m_stb && m_cyc);
+                               default_ack;
 
 endmodule
 

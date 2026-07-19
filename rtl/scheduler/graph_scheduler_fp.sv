@@ -1,5 +1,7 @@
 `default_nettype none
 
+import lucid_msg_pkg::*;
+
 module graph_scheduler_fp #(
     parameter int NUM_NODES = 64,
     parameter int Q_DEPTH = NUM_NODES
@@ -185,7 +187,7 @@ module graph_scheduler_fp #(
                     end else begin
                         // H3: 4-word EXEC_PRIM: header, {node_id, opcode, rsvd}, op0, op1
                         msg_tx_valid <= 1'b1;
-                        msg_tx_data <= {8'd1, 8'd0, 8'h30, 8'h00};
+                        msg_tx_data <= make_header(MODULE_ARITH, MODULE_SCHEDULER, MSG_EXEC_PRIM, 8'h00);
                         msg_tx_last <= 1'b0;
                         if (msg_tx_ready) state <= S_DISP_D0;
                     end

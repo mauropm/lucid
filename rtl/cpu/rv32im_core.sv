@@ -16,9 +16,10 @@ module rv32im_core (
     output logic        running
 );
 
-    typedef enum logic {
+    typedef enum logic [1:0] {
         STATE_FETCH,
-        STATE_EXEC
+        STATE_EXEC,
+        STATE_DIV
     } state_t;
 
     state_t state, state_next;
@@ -50,6 +51,16 @@ module rv32im_core (
     logic branch_taken;
     logic [31:0] branch_target;
     logic is_store;
+
+    logic [4:0]  div_cnt;
+    logic [31:0] div_rem;
+    logic [31:0] div_quo;
+    logic [31:0] div_divisor;
+    logic [4:0]  div_rd;
+    logic        div_is_signed;
+    logic        div_is_rem;
+    logic        div_neg_q;
+    logic        div_neg_r;
 
     assign opcode = instr[6:0];
     assign funct3 = instr[14:12];
@@ -237,7 +248,8 @@ module rv32im_core (
             csr_cycle <= csr_cycle + 1'b1;
             // M1: Count every completed instruction
             if ((state == STATE_EXEC && state_next == STATE_FETCH) ||
-                (state == STATE_EXEC && (opcode == 7'b1100011 || opcode == 7'b1101111 || opcode == 7'b1100111))) begin
+                (state == STATE_EXEC && (opcode == 7'b1100011 || opcode == 7'b1101111 || opcode == 7'b1100111)) ||
+                (state == STATE_DIV && state_next == STATE_FETCH)) begin
                 csr_instret <= csr_instret + 1'b1;
             end
             // M1: CSR writes
@@ -327,20 +339,36 @@ module rv32im_core (
                                     reg_wr_data = mulh_uu[63:32];
                                 end
                                 3'b100: begin // DIV
-                                    reg_wr_en   = 1'b1;
-                                    reg_wr_data = (alu_b != 0) ? $signed(alu_a) / $signed(alu_b) : -1;
+                                    if (rs2_val == 0) begin
+                                        reg_wr_en   = 1'b1;
+                                        reg_wr_data = 32'hFFFF_FFFF;
+                                    end else begin
+                                        state_next = STATE_DIV;
+                                    end
                                 end
                                 3'b101: begin // DIVU
-                                    reg_wr_en   = 1'b1;
-                                    reg_wr_data = (alu_b != 0) ? alu_a / alu_b : 32'hFFFF_FFFF;
+                                    if (rs2_val == 0) begin
+                                        reg_wr_en   = 1'b1;
+                                        reg_wr_data = 32'hFFFF_FFFF;
+                                    end else begin
+                                        state_next = STATE_DIV;
+                                    end
                                 end
                                 3'b110: begin // REM
-                                    reg_wr_en   = 1'b1;
-                                    reg_wr_data = (alu_b != 0) ? $signed(alu_a) % $signed(alu_b) : alu_a;
+                                    if (rs2_val == 0) begin
+                                        reg_wr_en   = 1'b1;
+                                        reg_wr_data = rs1_val;
+                                    end else begin
+                                        state_next = STATE_DIV;
+                                    end
                                 end
                                 3'b111: begin // REMU
-                                    reg_wr_en   = 1'b1;
-                                    reg_wr_data = (alu_b != 0) ? alu_a % alu_b : alu_a;
+                                    if (rs2_val == 0) begin
+                                        reg_wr_en   = 1'b1;
+                                        reg_wr_data = rs1_val;
+                                    end else begin
+                                        state_next = STATE_DIV;
+                                    end
                                 end
                                 default: begin
                                     reg_wr_en   = 1'b1;
@@ -463,7 +491,100 @@ module rv32im_core (
             default: begin
                 state_next = STATE_FETCH;
             end
+
+            STATE_DIV: begin
+                if (div_cnt == 5'd0) begin
+                    state_next = STATE_FETCH;
+                    reg_wr_en  = 1'b1;
+                    reg_wr_addr = div_rd;
+                    if (div_is_rem)
+                        reg_wr_data = div_neg_r ? (32'd0 - div_rem) : div_rem;
+                    else
+                        reg_wr_data = div_neg_q ? (32'd0 - div_quo) : div_quo;
+                end else begin
+                    state_next = STATE_DIV;
+                end
+            end
         endcase
+    end
+
+    logic [31:0] div_rem_shifted;
+    logic [31:0] div_sub_result;
+    logic        div_sub_ok;
+
+    assign div_rem_shifted = {div_rem[30:0], div_quo[31]};
+    assign div_sub_result  = div_rem_shifted - div_divisor;
+    assign div_sub_ok      = ~div_sub_result[31];
+
+    always_ff @(posedge clk or negedge reset_n) begin
+        if (!reset_n) begin
+            div_cnt       <= '0;
+            div_rem       <= '0;
+            div_quo       <= '0;
+            div_divisor   <= '0;
+            div_rd        <= '0;
+            div_is_signed <= 1'b0;
+            div_is_rem    <= 1'b0;
+            div_neg_q     <= 1'b0;
+            div_neg_r     <= 1'b0;
+        end else begin
+            if (state == STATE_EXEC && state_next == STATE_DIV) begin
+                div_cnt     <= 5'd31;
+                div_rd      <= rd;
+
+                case (funct3)
+                    3'b100: begin // DIV (signed)
+                        div_is_signed <= 1'b1;
+                        div_is_rem    <= 1'b0;
+                        div_neg_q     <= rs1_val[31] ^ rs2_val[31];
+                        div_neg_r     <= rs1_val[31];
+                        div_quo       <= rs1_val[31] ? (32'd0 - rs1_val) : rs1_val;
+                        div_rem       <= '0;
+                        div_divisor   <= rs2_val[31] ? (32'd0 - rs2_val) : rs2_val;
+                    end
+                    3'b101: begin // DIVU (unsigned)
+                        div_is_signed <= 1'b0;
+                        div_is_rem    <= 1'b0;
+                        div_neg_q     <= 1'b0;
+                        div_neg_r     <= 1'b0;
+                        div_quo       <= rs1_val;
+                        div_rem       <= '0;
+                        div_divisor   <= rs2_val;
+                    end
+                    3'b110: begin // REM (signed)
+                        div_is_signed <= 1'b1;
+                        div_is_rem    <= 1'b1;
+                        div_neg_q     <= rs1_val[31] ^ rs2_val[31];
+                        div_neg_r     <= rs1_val[31];
+                        div_quo       <= rs1_val[31] ? (32'd0 - rs1_val) : rs1_val;
+                        div_rem       <= '0;
+                        div_divisor   <= rs2_val[31] ? (32'd0 - rs2_val) : rs2_val;
+                    end
+                    3'b111: begin // REMU (unsigned)
+                        div_is_signed <= 1'b0;
+                        div_is_rem    <= 1'b1;
+                        div_neg_q     <= 1'b0;
+                        div_neg_r     <= 1'b0;
+                        div_quo       <= rs1_val;
+                        div_rem       <= '0;
+                        div_divisor   <= rs2_val;
+                    end
+                    default: ;
+                endcase
+            end
+
+            if (state == STATE_DIV) begin
+                if (div_sub_ok) begin
+                    div_rem <= div_sub_result;
+                    div_quo <= {div_quo[30:0], 1'b1};
+                end else begin
+                    div_rem <= div_rem_shifted;
+                    div_quo <= {div_quo[30:0], 1'b0};
+                end
+                if (div_cnt != 5'd0)
+                    div_cnt <= div_cnt - 1'b1;
+            end
+        end
     end
 
     always_ff @(posedge clk or negedge reset_n) begin
@@ -476,6 +597,7 @@ module rv32im_core (
             if (state == STATE_FETCH && wb_ack)
                 instr <= wb_dat_i;
             if ((state == STATE_EXEC && state_next == STATE_FETCH) ||
+                (state == STATE_EXEC && state_next == STATE_DIV) ||
                 (state == STATE_EXEC && (opcode == 7'b1100011 || opcode == 7'b1101111 || opcode == 7'b1100111)))
                 pc <= pc_next;
         end

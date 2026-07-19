@@ -52,8 +52,8 @@ module graph_scheduler #(
     assign q_empty = (q_cnt == 0);
     assign q_full  = (q_cnt == Q_DEPTH);
 
-    typedef enum logic [2:0] {
-        S_IDLE, S_SCAN, S_EXEC, S_RESULT, S_UPD_SCAN, S_UPD_NEXT, S_DONE
+    typedef enum logic [3:0] {
+        S_IDLE, S_SCAN, S_EXEC, S_RESULT, S_DIV, S_UPD_SCAN, S_UPD_NEXT, S_DONE
     } fsm_t;
 
     fsm_t state;
@@ -67,6 +67,12 @@ module graph_scheduler #(
     logic tmp_found;
     int tmp_rnid, tmp_rfid;
 
+    logic [4:0]  div_cnt;
+    logic [31:0] div_rem, div_quo, div_divisor;
+    wire [31:0]  div_rem_shifted = {div_rem[30:0], div_quo[31]};
+    wire [31:0]  div_sub_result  = div_rem_shifted - div_divisor;
+    wire         div_sub_ok      = ~div_sub_result[31];
+
     // H1: Single process for all state (no multi-driver)
     always_ff @(posedge clk or negedge reset_n) begin
         if (!reset_n) begin
@@ -78,6 +84,7 @@ module graph_scheduler #(
             scan_cnt <= '0;
             upd_dep_mask <= '0; upd_cur <= '0; exec_id <= '0;
             q_wptr <= '0; q_rptr <= '0; q_cnt <= '0;
+            div_cnt <= '0; div_rem <= '0; div_quo <= '0; div_divisor <= '0;
             for (int i = 0; i < NUM_NODES; i++) begin
                 node_state[i]  <= 2'b00;
                 node_opcode[i] <= 8'h00;
@@ -188,8 +195,28 @@ module graph_scheduler #(
                         8'h10: node_result[exec_id] <= node_op0[exec_id] + node_op1[exec_id];
                         8'h11: node_result[exec_id] <= node_op0[exec_id] - node_op1[exec_id];
                         8'h12: node_result[exec_id] <= node_op0[exec_id] * node_op1[exec_id];
-                        8'h13: node_result[exec_id] <= node_op1[exec_id] != 0 ? node_op0[exec_id] / node_op1[exec_id] : 32'd0;
-                        8'h14: node_result[exec_id] <= node_op1[exec_id] != 0 ? node_op0[exec_id] % node_op1[exec_id] : 32'd0;
+                        8'h13: begin
+                            if (node_op1[exec_id] == 0) begin
+                                node_result[exec_id] <= 32'd0;
+                            end else begin
+                                state <= S_DIV;
+                                div_cnt <= 5'd31;
+                                div_quo <= node_op0[exec_id];
+                                div_rem <= '0;
+                                div_divisor <= node_op1[exec_id];
+                            end
+                        end
+                        8'h14: begin
+                            if (node_op1[exec_id] == 0) begin
+                                node_result[exec_id] <= 32'd0;
+                            end else begin
+                                state <= S_DIV;
+                                div_cnt <= 5'd31;
+                                div_quo <= node_op0[exec_id];
+                                div_rem <= '0;
+                                div_divisor <= node_op1[exec_id];
+                            end
+                        end
                         8'h15: node_result[exec_id] <= {31'h0, node_op0[exec_id] == node_op1[exec_id]};
                         8'h16: node_result[exec_id] <= {31'h0, $signed(node_op0[exec_id]) < $signed(node_op1[exec_id])};
                         8'h17: node_result[exec_id] <= {31'h0, $signed(node_op0[exec_id]) > $signed(node_op1[exec_id])};
@@ -198,10 +225,39 @@ module graph_scheduler #(
                         8'h30: node_result[exec_id] <= node_op0[exec_id] != 0 ? node_op1[exec_id] : node_op2[exec_id];
                         default: node_result[exec_id] <= node_imm0[exec_id];
                     endcase
-                    node_state[exec_id] <= 2'b11;
-                    done_cnt <= done_cnt + 1'b1;
-                    upd_dep_mask <= node_dep[exec_id];
-                    state <= S_UPD_SCAN;
+                    if (node_opcode[exec_id] != 8'h13 && node_opcode[exec_id] != 8'h14) begin
+                        node_state[exec_id] <= 2'b11;
+                        done_cnt <= done_cnt + 1'b1;
+                        upd_dep_mask <= node_dep[exec_id];
+                        state <= S_UPD_SCAN;
+                    end else if (node_op1[exec_id] == 0) begin
+                        node_state[exec_id] <= 2'b11;
+                        done_cnt <= done_cnt + 1'b1;
+                        upd_dep_mask <= node_dep[exec_id];
+                        state <= S_UPD_SCAN;
+                    end
+                end
+
+                S_DIV: begin
+                    if (div_sub_ok) begin
+                        div_rem <= div_sub_result;
+                        div_quo <= {div_quo[30:0], 1'b1};
+                    end else begin
+                        div_rem <= div_rem_shifted;
+                        div_quo <= {div_quo[30:0], 1'b0};
+                    end
+                    if (div_cnt == 5'd0) begin
+                        if (node_opcode[exec_id] == 8'h14)
+                            node_result[exec_id] <= div_sub_ok ? div_sub_result : div_rem_shifted;
+                        else
+                            node_result[exec_id] <= div_sub_ok ? {div_quo[30:0], 1'b1} : {div_quo[30:0], 1'b0};
+                        node_state[exec_id] <= 2'b11;
+                        done_cnt <= done_cnt + 1'b1;
+                        upd_dep_mask <= node_dep[exec_id];
+                        state <= S_UPD_SCAN;
+                    end else begin
+                        div_cnt <= div_cnt - 1'b1;
+                    end
                 end
 
                 S_UPD_SCAN: begin
@@ -293,6 +349,16 @@ module graph_scheduler #(
             endcase
         end
     end
+
+`ifdef HAVE_SVA
+    assert property (@(posedge clk) disable iff (!reset_n)
+        q_cnt <= Q_DEPTH)
+    else $error("Scheduler queue count exceeds Q_DEPTH");
+
+    assert property (@(posedge clk) disable iff (!reset_n)
+        done_cnt <= node_cnt)
+    else $warning("done_cnt exceeds node_cnt");
+`endif
 
 endmodule
 

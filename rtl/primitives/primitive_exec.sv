@@ -1,5 +1,7 @@
 `default_nettype none
 
+import lucid_msg_pkg::*;
+
 module primitive_exec (
     input  logic        clk,
     input  logic        reset_n,
@@ -15,12 +17,12 @@ module primitive_exec (
     input  logic        msg_out_ready
 );
 
-    // H3: Extended protocol - 4-word EXEC_PRIM, 3-word PRIM_RESULT
-    typedef enum logic [2:0] {
+    typedef enum logic [3:0] {
         RX_IDLE,
         RX_DATA0,
         RX_DATA1,
         RX_DATA2,
+        RX_DIV,
         TX_HEADER,
         TX_DATA0,
         TX_DATA1
@@ -31,23 +33,29 @@ module primitive_exec (
     logic [7:0]  rx_node_id;
     logic [7:0]  rx_opcode;
     logic [31:0] rx_op0, rx_op1;
-    logic [31:0] result;
     logic [2:0]  word_cnt;
 
+    logic [4:0]  div_cnt;
+    logic [31:0] div_rem, div_quo, div_divisor;
+    logic [31:0] div_result;
+    wire [31:0]  div_rem_shifted = {div_rem[30:0], div_quo[31]};
+    wire [31:0]  div_sub_result  = div_rem_shifted - div_divisor;
+    wire         div_sub_ok      = ~div_sub_result[31];
+
+    logic [31:0] result_comb;
     always_comb begin
-        case (rx_opcode)
-            8'h10: result = rx_op0 + rx_op1;
-            8'h11: result = rx_op0 - rx_op1;
-            8'h12: result = rx_op0 * rx_op1;
-            // M7: Consistent div-by-zero with RISC-V (quotient=-1, remainder=dividend)
-            8'h13: result = rx_op1 != 0 ? rx_op0 / rx_op1 : 32'hFFFF_FFFF;
-            8'h14: result = rx_op1 != 0 ? rx_op0 % rx_op1 : rx_op0;
-            8'h15: result = {31'h0, rx_op0 == rx_op1};
-            8'h16: result = {31'h0, $signed(rx_op0) < $signed(rx_op1)};
-            8'h17: result = {31'h0, $signed(rx_op0) > $signed(rx_op1)};
-            8'h18: result = {31'h0, $signed(rx_op0) <= $signed(rx_op1)};
-            8'h19: result = {31'h0, $signed(rx_op0) >= $signed(rx_op1)};
-            default: result = 32'h0;
+        case (rx_opcode[7:0])
+            8'h10: result_comb = rx_op0 + rx_op1;
+            8'h11: result_comb = rx_op0 - rx_op1;
+            8'h12: result_comb = rx_op0 * rx_op1;
+            8'h13: result_comb = div_result;
+            8'h14: result_comb = div_result;
+            8'h15: result_comb = {31'h0, rx_op0 == rx_op1};
+            8'h16: result_comb = {31'h0, $signed(rx_op0) < $signed(rx_op1)};
+            8'h17: result_comb = {31'h0, $signed(rx_op0) > $signed(rx_op1)};
+            8'h18: result_comb = {31'h0, $signed(rx_op0) <= $signed(rx_op1)};
+            8'h19: result_comb = {31'h0, $signed(rx_op0) >= $signed(rx_op1)};
+            default: result_comb = 32'h0;
         endcase
     end
 
@@ -63,6 +71,11 @@ module primitive_exec (
             msg_out_valid <= 1'b0;
             msg_out_data <= '0;
             msg_out_last <= 1'b0;
+            div_cnt <= '0;
+            div_rem <= '0;
+            div_quo <= '0;
+            div_divisor <= '0;
+            div_result <= '0;
         end else begin
             msg_in_ready <= 1'b0;
             msg_out_valid <= 1'b0;
@@ -71,7 +84,6 @@ module primitive_exec (
                 RX_IDLE: begin
                     msg_in_ready <= 1'b1;
                     if (msg_in_valid) begin
-                        // Header word received
                         state <= RX_DATA0;
                     end
                 end
@@ -88,7 +100,6 @@ module primitive_exec (
                 RX_DATA1: begin
                     msg_in_ready <= 1'b1;
                     if (msg_in_valid) begin
-                        // H3: Full 32-bit op0
                         rx_op0 <= msg_in_data;
                         state <= RX_DATA2;
                     end
@@ -97,18 +108,48 @@ module primitive_exec (
                 RX_DATA2: begin
                     msg_in_ready <= 1'b1;
                     if (msg_in_valid && msg_in_last) begin
-                        // H3: Full 32-bit op1, verify LAST
                         rx_op1 <= msg_in_data;
-                        state <= TX_HEADER;
+                        if (rx_opcode == 8'h13 || rx_opcode == 8'h14) begin
+                            if (msg_in_data == 0) begin
+                                div_result <= 32'd0;
+                                state <= TX_HEADER;
+                            end else begin
+                                state <= RX_DIV;
+                                div_cnt <= 5'd31;
+                                div_quo <= rx_op0;
+                                div_rem <= '0;
+                                div_divisor <= msg_in_data;
+                            end
+                        end else begin
+                            state <= TX_HEADER;
+                        end
                     end else if (msg_in_valid && !msg_in_last) begin
-                        // M7: Protocol error - expected LAST
                         state <= RX_IDLE;
+                    end
+                end
+
+                RX_DIV: begin
+                    if (div_sub_ok) begin
+                        div_rem <= div_sub_result;
+                        div_quo <= {div_quo[30:0], 1'b1};
+                    end else begin
+                        div_rem <= div_rem_shifted;
+                        div_quo <= {div_quo[30:0], 1'b0};
+                    end
+                    if (div_cnt == 5'd0) begin
+                        if (rx_opcode == 8'h14)
+                            div_result <= div_sub_ok ? div_sub_result : div_rem_shifted;
+                        else
+                            div_result <= div_sub_ok ? {div_quo[30:0], 1'b1} : {div_quo[30:0], 1'b0};
+                        state <= TX_HEADER;
+                    end else begin
+                        div_cnt <= div_cnt - 1'b1;
                     end
                 end
 
                 TX_HEADER: begin
                     msg_out_valid <= 1'b1;
-                    msg_out_data <= {8'd0, 8'd1, 8'h31, 8'h00};
+                    msg_out_data <= make_header(MODULE_SCHEDULER, MODULE_ARITH, MSG_PRIM_RESULT, 8'h00);
                     msg_out_last <= 1'b0;
                     if (msg_out_ready)
                         state <= TX_DATA0;
@@ -124,8 +165,7 @@ module primitive_exec (
 
                 TX_DATA1: begin
                     msg_out_valid <= 1'b1;
-                    // H3: Full 32-bit result
-                    msg_out_data <= result;
+                    msg_out_data <= result_comb;
                     msg_out_last <= 1'b1;
                     if (msg_out_ready)
                         state <= RX_IDLE;

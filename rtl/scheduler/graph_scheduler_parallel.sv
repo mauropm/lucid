@@ -15,7 +15,7 @@ module graph_scheduler_parallel #(
     localparam int DEP_W = NUM_NODES;
     localparam int Q_CNT_W = $clog2(Q_DEPTH) + 1;
 
-    typedef enum logic [2:0] { S_IDLE, S_SCAN, S_EXEC, S_BACKUP, S_UPD_SCAN, S_UPD_NEXT, S_DONE } fsm_t;
+    typedef enum logic [3:0] { S_IDLE, S_SCAN, S_EXEC, S_BACKUP, S_DIV, S_UPD_SCAN, S_UPD_NEXT, S_DONE } fsm_t;
     fsm_t state;
 
     logic [31:0] ctrl, status, root_id, node_cnt, done_cnt, perf_conc;
@@ -62,6 +62,14 @@ module graph_scheduler_parallel #(
     logic tmp_found;
     int tmp_rnid, tmp_rfid;
 
+    logic [4:0]  div_cnt;
+    logic [31:0] div_rem, div_quo, div_divisor;
+    logic [NODE_ID_W-1:0] div_node_id;
+    logic        div_is_mod;
+    wire [31:0]  div_rem_shifted = {div_rem[30:0], div_quo[31]};
+    wire [31:0]  div_sub_result  = div_rem_shifted - div_divisor;
+    wire         div_sub_ok      = ~div_sub_result[31];
+
     // Queue process
     always_ff @(posedge clk or negedge reset_n) begin
         if (!reset_n) begin
@@ -96,6 +104,8 @@ module graph_scheduler_parallel #(
             backup_valid <= 1'b0; backup_id <= '0;
             upd_mask <= '0; upd_src <= '0; upd_cur <= '0;
             exec_id <= '0;
+            div_cnt <= '0; div_rem <= '0; div_quo <= '0; div_divisor <= '0;
+            div_node_id <= '0; div_is_mod <= 1'b0;
             for (int i = 0; i < NUM_NODES; i++) begin
                 node_state[i]  <= 2'b00;
                 node_opcode[i] <= 8'h00;
@@ -173,15 +183,25 @@ module graph_scheduler_parallel #(
                     if (!q_empty) begin
                         pop_q <= 1'b1;
                         exec_id <= pop_id;
-                        // M6: Full opcode coverage
+                        div_node_id <= pop_id;
                         case (node_opcode[pop_id])
                             8'h01: node_result[pop_id] <= node_imm0[pop_id];
                             8'h02: node_result[pop_id] <= {31'h0, node_flags[pop_id][0]};
                             8'h10: node_result[pop_id] <= node_op0[pop_id] + node_op1[pop_id];
                             8'h11: node_result[pop_id] <= node_op0[pop_id] - node_op1[pop_id];
                             8'h12: node_result[pop_id] <= node_op0[pop_id] * node_op1[pop_id];
-                            8'h13: node_result[pop_id] <= node_op1[pop_id] != 0 ? node_op0[pop_id] / node_op1[pop_id] : 32'd0;
-                            8'h14: node_result[pop_id] <= node_op1[pop_id] != 0 ? node_op0[pop_id] % node_op1[pop_id] : 32'd0;
+                            8'h13, 8'h14: begin
+                                if (node_op1[pop_id] != 0) begin
+                                    state <= S_DIV;
+                                    div_cnt <= 5'd31;
+                                    div_quo <= node_op0[pop_id];
+                                    div_rem <= '0;
+                                    div_divisor <= node_op1[pop_id];
+                                    div_is_mod <= (node_opcode[pop_id] == 8'h14);
+                                end else begin
+                                    node_result[pop_id] <= 32'd0;
+                                end
+                            end
                             8'h15: node_result[pop_id] <= {31'h0, node_op0[pop_id] == node_op1[pop_id]};
                             8'h16: node_result[pop_id] <= {31'h0, $signed(node_op0[pop_id]) < $signed(node_op1[pop_id])};
                             8'h17: node_result[pop_id] <= {31'h0, $signed(node_op0[pop_id]) > $signed(node_op1[pop_id])};
@@ -189,10 +209,14 @@ module graph_scheduler_parallel #(
                             8'h19: node_result[pop_id] <= {31'h0, $signed(node_op0[pop_id]) >= $signed(node_op1[pop_id])};
                             default: node_result[pop_id] <= node_imm0[pop_id];
                         endcase
-                        node_state[pop_id] <= 2'b11;
-                        done_cnt <= done_cnt + 1'b1;
+                        if (node_opcode[pop_id] != 8'h13 && node_opcode[pop_id] != 8'h14) begin
+                            node_state[pop_id] <= 2'b11;
+                            done_cnt <= done_cnt + 1'b1;
+                        end else if (node_op1[pop_id] == 0) begin
+                            node_state[pop_id] <= 2'b11;
+                            done_cnt <= done_cnt + 1'b1;
+                        end
 
-                        // C9: Check for second pop
                         if (q_cnt > 1) begin
                             pop_q2 <= 1'b1;
                             backup_valid <= 1'b1;
@@ -204,29 +228,40 @@ module graph_scheduler_parallel #(
                         end
                         upd_src <= pop_id;
                         upd_mask <= node_dep[pop_id];
-                        state <= S_UPD_SCAN;
+                        if (state != S_DIV)
+                            state <= S_UPD_SCAN;
                     end else begin
-                        // Queue empty - check if done or need to wait
                         if (node_state[root_id] == 2'b11)
                             state <= S_DONE;
                         else if (done_cnt >= node_cnt)
                             state <= S_DONE;
                         else
-                            state <= S_EXEC; // Wait for more work
+                            state <= S_EXEC;
                     end
                 end
 
                 S_BACKUP: begin
                     if (backup_valid) begin
                         exec_id <= backup_id;
+                        div_node_id <= backup_id;
                         case (node_opcode[backup_id])
                             8'h01: node_result[backup_id] <= node_imm0[backup_id];
                             8'h02: node_result[backup_id] <= {31'h0, node_flags[backup_id][0]};
                             8'h10: node_result[backup_id] <= node_op0[backup_id] + node_op1[backup_id];
                             8'h11: node_result[backup_id] <= node_op0[backup_id] - node_op1[backup_id];
                             8'h12: node_result[backup_id] <= node_op0[backup_id] * node_op1[backup_id];
-                            8'h13: node_result[backup_id] <= node_op1[backup_id] != 0 ? node_op0[backup_id] / node_op1[backup_id] : 32'd0;
-                            8'h14: node_result[backup_id] <= node_op1[backup_id] != 0 ? node_op0[backup_id] % node_op1[backup_id] : 32'd0;
+                            8'h13, 8'h14: begin
+                                if (node_op1[backup_id] != 0) begin
+                                    state <= S_DIV;
+                                    div_cnt <= 5'd31;
+                                    div_quo <= node_op0[backup_id];
+                                    div_rem <= '0;
+                                    div_divisor <= node_op1[backup_id];
+                                    div_is_mod <= (node_opcode[backup_id] == 8'h14);
+                                end else begin
+                                    node_result[backup_id] <= 32'd0;
+                                end
+                            end
                             8'h15: node_result[backup_id] <= {31'h0, node_op0[backup_id] == node_op1[backup_id]};
                             8'h16: node_result[backup_id] <= {31'h0, $signed(node_op0[backup_id]) < $signed(node_op1[backup_id])};
                             8'h17: node_result[backup_id] <= {31'h0, $signed(node_op0[backup_id]) > $signed(node_op1[backup_id])};
@@ -234,13 +269,21 @@ module graph_scheduler_parallel #(
                             8'h19: node_result[backup_id] <= {31'h0, $signed(node_op0[backup_id]) >= $signed(node_op1[backup_id])};
                             default: node_result[backup_id] <= node_imm0[backup_id];
                         endcase
-                        node_state[backup_id] <= 2'b11;
-                        done_cnt <= done_cnt + 1'b1;
+                        if (node_opcode[backup_id] != 8'h13 && node_opcode[backup_id] != 8'h14) begin
+                            node_state[backup_id] <= 2'b11;
+                            done_cnt <= done_cnt + 1'b1;
+                        end else if (node_op1[backup_id] == 0) begin
+                            node_state[backup_id] <= 2'b11;
+                            done_cnt <= done_cnt + 1'b1;
+                        end
                         backup_valid <= 1'b0;
                         upd_src <= backup_id;
                         upd_mask <= node_dep[backup_id];
+                        if (state != S_DIV)
+                            state <= S_UPD_SCAN;
+                    end else begin
+                        state <= S_UPD_SCAN;
                     end
-                     state <= S_UPD_SCAN;
                 end
 
                 S_UPD_SCAN: begin
@@ -259,6 +302,29 @@ module graph_scheduler_parallel #(
                     end else begin
                         if (node_state[root_id] == 2'b11) state <= S_DONE;
                         else state <= S_EXEC;
+                    end
+                end
+
+                S_DIV: begin
+                    if (div_sub_ok) begin
+                        div_rem <= div_sub_result;
+                        div_quo <= {div_quo[30:0], 1'b1};
+                    end else begin
+                        div_rem <= div_rem_shifted;
+                        div_quo <= {div_quo[30:0], 1'b0};
+                    end
+                    if (div_cnt == 5'd0) begin
+                        if (div_is_mod)
+                            node_result[div_node_id] <= div_sub_ok ? div_sub_result : div_rem_shifted;
+                        else
+                            node_result[div_node_id] <= div_sub_ok ? {div_quo[30:0], 1'b1} : {div_quo[30:0], 1'b0};
+                        node_state[div_node_id] <= 2'b11;
+                        done_cnt <= done_cnt + 1'b1;
+                        upd_mask <= node_dep[div_node_id];
+                        upd_src <= div_node_id;
+                        state <= S_UPD_SCAN;
+                    end else begin
+                        div_cnt <= div_cnt - 1'b1;
                     end
                 end
 

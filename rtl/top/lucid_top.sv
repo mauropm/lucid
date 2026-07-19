@@ -11,11 +11,9 @@ module lucid_top (
     // ============================================================
     // Clock generation
     // ============================================================
-`ifdef SYNTHESIS
     logic pll_lock;
     logic clk_100m;
 
-    // H14+L3: Correct Gowin rPLL parameters, no defparam
     rPLL #(
         .FCLKIN("27"),
         .IDIV_SEL(2),
@@ -29,11 +27,6 @@ module lucid_top (
 
     logic clk;
     assign clk = clk_100m;
-`else
-    logic clk;
-    assign clk = clk_27m;
-    logic pll_lock = 1'b1;
-`endif
 
     // ============================================================
     // H16: Reset synchronization - async assert, sync deassert
@@ -94,6 +87,8 @@ module lucid_top (
     // Wishbone Bus
     // ============================================================
     wishbone_bus bus (
+        .clk(clk),
+        .reset_n(reset_n),
         .m_cyc(wb_cyc),
         .m_stb(wb_stb),
         .m_we(wb_we),
