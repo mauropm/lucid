@@ -32,9 +32,9 @@ module wishbone_bus (
 );
 
     wire [2:0] slave_sel;
-    assign slave_sel[0] = (m_adr[31:12] == 20'h00000);
-    assign slave_sel[1] = (m_adr[31:12] == 20'h00001);
-    assign slave_sel[2] = (m_adr[31:12] == 20'h00002);
+    assign slave_sel[0] = (m_adr[31:16] == 16'h0000);
+    assign slave_sel[1] = (m_adr[31:16] == 16'h0001);
+    assign slave_sel[2] = (m_adr[31:16] == 16'h0002);
 
     wire any_sel = |slave_sel;
 
@@ -56,22 +56,17 @@ module wishbone_bus (
     assign s2_dat_w = m_dat_w;
     assign s2_sel   = m_sel;
 
-    // H5: Default slave returns all-ones data and registered ack for unmapped addresses
-    logic default_ack;
-    always_ff @(posedge clk or negedge reset_n) begin
-        if (!reset_n)
-            default_ack <= 1'b0;
-        else
-            default_ack <= m_stb && m_cyc && !any_sel;
-    end
-
+    // Unmapped accesses return all-ones data with no ack. The ack is driven
+    // combinationally from the selected slave only (no registered default-ack
+    // path) to avoid a simulator-specific combinational loop when the master
+    // holds cyc/stb high while waiting for a response.
     assign m_dat_r = slave_sel[0] ? s0_dat_r :
-                     slave_sel[1] ? s1_dat_r :
-                     slave_sel[2] ? s2_dat_r : 32'hFFFF_FFFF;
-    assign m_ack   = any_sel ? (slave_sel[0] ? s0_ack :
-                                slave_sel[1] ? s1_ack :
-                                               s2_ack) :
-                               default_ack;
+                     slave_sel[1] ? (s1_we ? 32'h0000_0000 : s1_dat_r) :
+                     slave_sel[2] ? (s2_we ? 32'h0000_0000 : s2_dat_r) :
+                     32'hFFFF_FFFF;
+    assign m_ack   = slave_sel[0] ? s0_ack :
+                     slave_sel[1] ? s1_ack :
+                     slave_sel[2] ? s2_ack : 1'b0;
 
 endmodule
 

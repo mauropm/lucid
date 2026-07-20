@@ -26,7 +26,11 @@ module graph_scheduler_fp #(
     input  logic        msg_rx_valid,
     input  logic        msg_rx_last,
     input  logic [31:0] msg_rx_data,
-    output logic        msg_rx_ready
+    output logic        msg_rx_ready,
+
+    // Debug passthroughs (used by integration testbenches)
+    output logic [31:0] dbg_node_result [0:NUM_NODES-1],
+    output logic [31:0] dbg_root_id
 );
 
     localparam int NODE_ID_W = $clog2(NUM_NODES);
@@ -49,8 +53,10 @@ module graph_scheduler_fp #(
     logic [DEP_W-1:0] node_dep [0:NUM_NODES-1];
     logic [31:0] node_op0    [0:NUM_NODES-1];
     logic [31:0] node_op1    [0:NUM_NODES-1];
+    logic [31:0] node_op2    [0:NUM_NODES-1];
     logic [NODE_ID_W-1:0] node_src0 [0:NUM_NODES-1];
     logic [NODE_ID_W-1:0] node_src1 [0:NUM_NODES-1];
+    logic [NODE_ID_W-1:0] node_src2 [0:NUM_NODES-1];
 
     logic [NODE_ID_W-1:0] queue [0:Q_DEPTH-1];
     logic [NODE_ID_W-1:0] q_wptr, q_rptr;
@@ -62,7 +68,8 @@ module graph_scheduler_fp #(
 
     typedef enum logic [3:0] {
         S_IDLE, S_SCAN, S_EXEC, S_DISPATCH, S_DISP_D0, S_DISP_D1, S_DISP_D2,
-        S_WAIT_MSG, S_WAIT_NID, S_WAIT_RES, S_UPD_SCAN, S_UPD_NEXT, S_DONE
+        S_WAIT_MSG, S_WAIT_NID, S_WAIT_RES, S_UPD_SCAN, S_UPD_NEXT, S_DONE,
+        S_DIV
     } fsm_t;
 
     fsm_t state;
@@ -72,10 +79,18 @@ module graph_scheduler_fp #(
     logic [DEP_W-1:0] upd_dep_mask;
     logic [NODE_ID_W-1:0] upd_cur;
     logic [NODE_ID_W-1:0] exec_id;
-    int tmp_nid, tmp_fid;
+    logic [7:0]  tmp_nid;
+    logic [2:0]  tmp_fid;
     logic tmp_found;
     logic [NODE_ID_W-1:0] tmp_res_nid;
-    int tmp_rnid, tmp_rfid;
+    logic [7:0]  tmp_rnid;
+    logic [2:0]  tmp_rfid;
+
+    logic [4:0]  div_cnt;
+    logic [31:0] div_rem, div_quo, div_divisor;
+    wire [31:0]  div_rem_shifted = {div_rem[30:0], div_quo[31]};
+    wire [31:0]  div_sub_result  = div_rem_shifted - div_divisor;
+    wire         div_sub_ok      = ~div_sub_result[31];
 
     always_ff @(posedge clk or negedge reset_n) begin
         if (!reset_n) begin
@@ -99,8 +114,10 @@ module graph_scheduler_fp #(
                 node_dep[i]    <= '0;
                 node_op0[i]    <= 32'd0;
                 node_op1[i]    <= 32'd0;
+                node_op2[i]    <= 32'd0;
                 node_src0[i]   <= '0;
                 node_src1[i]   <= '0;
+                node_src2[i]   <= '0;
             end
         end else begin
             start_pulse <= 1'b0;
@@ -130,6 +147,7 @@ module graph_scheduler_fp #(
                             5: begin
                                 node_src0[tmp_nid] <= reg_dat_w[7:0];
                                 node_src1[tmp_nid] <= reg_dat_w[15:8];
+                                node_src2[tmp_nid] <= reg_dat_w[23:16];
                             end
                             6: node_dep[tmp_nid][63:32] <= reg_dat_w;
                             default: ;
@@ -177,19 +195,91 @@ module graph_scheduler_fp #(
                 end
 
                 S_DISPATCH: begin
-                    if (node_opcode[exec_id] == 8'h01 || node_opcode[exec_id] == 8'h02) begin
-                        node_result[exec_id] <= (node_opcode[exec_id] == 8'h01) ?
-                            node_imm0[exec_id] : {31'h0, node_flags[exec_id][0]};
+                    case (node_opcode[exec_id])
+                        8'h01: begin
+                            node_result[exec_id] <= node_imm0[exec_id];
+                            node_state[exec_id] <= 2'b11;
+                            done_cnt <= done_cnt + 1'b1;
+                            upd_dep_mask <= node_dep[exec_id];
+                            state <= S_UPD_SCAN;
+                        end
+                        8'h02: begin
+                            node_result[exec_id] <= {31'h0, node_flags[exec_id][0]};
+                            node_state[exec_id] <= 2'b11;
+                            done_cnt <= done_cnt + 1'b1;
+                            upd_dep_mask <= node_dep[exec_id];
+                            state <= S_UPD_SCAN;
+                        end
+                        8'h30: begin
+                            // SELECT / conditional: result = cond ? a : b, computed
+                            // locally (three inputs, cannot go through the 2-operand pe).
+                             node_result[exec_id] <= node_op0[exec_id]
+                                                       ? node_op1[exec_id]
+                                                       : node_op2[exec_id];
+                            node_state[exec_id] <= 2'b11;
+                            done_cnt <= done_cnt + 1'b1;
+                            upd_dep_mask <= node_dep[exec_id];
+                            state <= S_UPD_SCAN;
+                        end
+                        8'h10: node_result[exec_id] <= node_op0[exec_id] + node_op1[exec_id];
+                        8'h11: node_result[exec_id] <= node_op0[exec_id] - node_op1[exec_id];
+                        8'h12: node_result[exec_id] <= node_op0[exec_id] * node_op1[exec_id];
+                        8'h15: node_result[exec_id] <= {31'h0, node_op0[exec_id] == node_op1[exec_id]};
+                        8'h16: node_result[exec_id] <= {31'h0, $signed(node_op0[exec_id]) <  $signed(node_op1[exec_id])};
+                        8'h17: node_result[exec_id] <= {31'h0, $signed(node_op0[exec_id]) >  $signed(node_op1[exec_id])};
+                        8'h18: node_result[exec_id] <= {31'h0, $signed(node_op0[exec_id]) <= $signed(node_op1[exec_id])};
+                        8'h19: node_result[exec_id] <= {31'h0, $signed(node_op0[exec_id]) >= $signed(node_op1[exec_id])};
+                        8'h13, 8'h14: begin
+                            if (node_op1[exec_id] == 0) begin
+                                node_result[exec_id] <= 32'd0;
+                                node_state[exec_id] <= 2'b11;
+                                done_cnt <= done_cnt + 1'b1;
+                                upd_dep_mask <= node_dep[exec_id];
+                                state <= S_UPD_SCAN;
+                            end else begin
+                                state <= S_DIV;
+                                div_cnt <= 5'd31;
+                                div_quo <= node_op0[exec_id];
+                                div_rem <= '0;
+                                div_divisor <= node_op1[exec_id];
+                            end
+                        end
+                        default: begin
+                            // H3: offload arithmetic to the attached PE via a
+                            // 4-word EXEC_PRIM message (FPU integration path).
+                            msg_tx_valid <= 1'b1;
+                            msg_tx_data <= make_header(MODULE_ARITH, MODULE_SCHEDULER, MSG_EXEC_PRIM, 8'h00);
+                            msg_tx_last <= 1'b0;
+                            if (msg_tx_ready) state <= S_DISP_D0;
+                        end
+                    endcase
+                    if (state == S_DISPATCH) begin
+                        node_state[exec_id] <= 2'b11;
+                        done_cnt <= done_cnt + 1'b1;
+                        upd_dep_mask <= node_dep[exec_id];
+                        state <= S_UPD_SCAN;
+                    end
+                end
+
+                S_DIV: begin
+                    if (div_sub_ok) begin
+                        div_rem <= div_sub_result;
+                        div_quo <= {div_quo[30:0], 1'b1};
+                    end else begin
+                        div_rem <= div_rem_shifted;
+                        div_quo <= {div_quo[30:0], 1'b0};
+                    end
+                    if (div_cnt == 5'd0) begin
+                        if (node_opcode[exec_id] == 8'h14)
+                            node_result[exec_id] <= div_sub_ok ? div_sub_result : div_rem_shifted;
+                        else
+                            node_result[exec_id] <= div_sub_ok ? {div_quo[30:0], 1'b1} : {div_quo[30:0], 1'b0};
                         node_state[exec_id] <= 2'b11;
                         done_cnt <= done_cnt + 1'b1;
                         upd_dep_mask <= node_dep[exec_id];
                         state <= S_UPD_SCAN;
                     end else begin
-                        // H3: 4-word EXEC_PRIM: header, {node_id, opcode, rsvd}, op0, op1
-                        msg_tx_valid <= 1'b1;
-                        msg_tx_data <= make_header(MODULE_ARITH, MODULE_SCHEDULER, MSG_EXEC_PRIM, 8'h00);
-                        msg_tx_last <= 1'b0;
-                        if (msg_tx_ready) state <= S_DISP_D0;
+                        div_cnt <= div_cnt - 1'b1;
                     end
                 end
 
@@ -268,6 +358,8 @@ module graph_scheduler_fp #(
                             node_op0[upd_cur] <= node_result[exec_id];
                         else if (node_src1[upd_cur] == exec_id)
                             node_op1[upd_cur] <= node_result[exec_id];
+                        else if (node_src2[upd_cur] == exec_id)
+                            node_op2[upd_cur] <= node_result[exec_id];
                         node_rdyinp[upd_cur] <= node_rdyinp[upd_cur] + 1'b1;
                         if (node_rdyinp[upd_cur] + 1 >= node_numinp[upd_cur]) begin
                             node_state[upd_cur] <= 2'b10;
@@ -322,6 +414,9 @@ module graph_scheduler_fp #(
             endcase
         end
     end
+    assign dbg_node_result = node_result;
+
+    assign dbg_root_id     = root_id;
 
 endmodule
 

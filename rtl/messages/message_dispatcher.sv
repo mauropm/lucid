@@ -32,14 +32,11 @@ module message_dispatcher #(
     logic [31:0] status;
 
     logic [31:0] msg_count [NUM_MODULES];
-    logic [31:0] err_count [NUM_MODULES];
 
     logic [ROUTER_INPUTS-1:0]  r_in_valid, r_in_last, r_in_ready;
     logic [ROUTER_INPUTS*32-1:0] r_in_data;
     logic [ROUTER_OUTPUTS-1:0] r_out_valid, r_out_last, r_out_ready;
     logic [ROUTER_OUTPUTS*32-1:0] r_out_data;
-
-    logic any_err;
 
     message_router #(
         .NUM_INPUTS(ROUTER_INPUTS),
@@ -82,23 +79,15 @@ module message_dispatcher #(
         end
     endgenerate
 
-    always_comb begin
-        any_err = 1'b0;
-        for (int m = 0; m < NUM_MODULES; m++) begin
-            if (|err_count[m]) any_err = 1'b1;
-        end
-    end
-
     assign wb_ack = wb_stb && wb_cyc;
 
-    assign status = {24'h0, |r_out_valid, |r_in_valid, any_err, 1'b0};
+    assign status = {25'h0, |r_out_valid, |r_in_valid, 2'b00};
 
     always_ff @(posedge clk or negedge reset_n) begin
         if (!reset_n) begin
             ctrl <= '0;
             for (int m = 0; m < NUM_MODULES; m++) begin
                 msg_count[m] <= '0;
-                err_count[m] <= '0;
             end
         end else begin
             // H8: Count complete messages (on last word transfer)
@@ -121,8 +110,6 @@ module message_dispatcher #(
             default: begin
                 if (wb_adr[7:0] >= 8'h10 && wb_adr[7:0] < 8'h10 + NUM_MODULES*4)
                     wb_dat_r = msg_count[(wb_adr[7:0] - 8'h10) >> 2];
-                else if (wb_adr[7:0] >= 8'h20 && wb_adr[7:0] < 8'h20 + NUM_MODULES*4)
-                    wb_dat_r = err_count[(wb_adr[7:0] - 8'h20) >> 2];
                 else
                     wb_dat_r = '0;
             end

@@ -1,7 +1,9 @@
 `default_nettype none
 
 module uart #(
-    parameter int FIFO_DEPTH = 8
+    parameter int FIFO_DEPTH = 8,
+    parameter int CLK_FREQ_HZ = 108_000_000,
+    parameter int DEFAULT_BAUD = 115_200
 ) (
     input  logic        clk,
     input  logic        reset_n,
@@ -19,8 +21,12 @@ module uart #(
     output logic        tx
 );
 
+    logic tx_internal;
+
     logic [31:0] ctrl;
     logic [15:0] baud_div;
+
+    localparam logic [15:0] DEFAULT_BAUD_DIV = CLK_FREQ_HZ / DEFAULT_BAUD;
 
     logic tx_busy;
     logic rx_ready;
@@ -44,7 +50,7 @@ module uart #(
     always_ff @(posedge clk or negedge reset_n) begin
         if (!reset_n) begin
             ctrl     <= '0;
-            baud_div <= 16'd938;
+            baud_div <= DEFAULT_BAUD_DIV;
             rx_overrun_clr <= 1'b0;
         end else begin
             rx_overrun_clr <= 1'b0;
@@ -172,12 +178,12 @@ module uart #(
             tx_bit_cnt <= '0;
             tx_busy    <= 1'b0;
             tx_fifo_rd <= 1'b0;
-            tx         <= 1'b1;
+            tx_internal <= 1'b1;
         end else begin
             tx_fifo_rd <= 1'b0;
             case (tx_state)
                 TX_IDLE: begin
-                    tx <= 1'b1;
+                    tx_internal <= 1'b1;
                     if (!tx_fifo_empty && ctrl[0]) begin
                         tx_fifo_rd <= 1'b1;
                         tx_state   <= TX_START;
@@ -185,7 +191,7 @@ module uart #(
                     end
                 end
                 TX_START: begin
-                    tx <= 1'b0;
+                    tx_internal <= 1'b0;
                     if (baud_tick) begin
                         tx_shift   <= tx_fifo_data;
                         tx_bit_cnt <= 4'd0;
@@ -193,7 +199,7 @@ module uart #(
                     end
                 end
                 TX_DATA: begin
-                    tx <= tx_shift[0];
+                    tx_internal <= tx_shift[0];
                     if (baud_tick) begin
                         tx_shift   <= {1'b0, tx_shift[7:1]};
                         tx_bit_cnt <= tx_bit_cnt + 1'b1;
@@ -202,7 +208,7 @@ module uart #(
                     end
                 end
                 TX_STOP: begin
-                    tx <= 1'b1;
+                    tx_internal <= 1'b1;
                     if (baud_tick) begin
                         tx_busy  <= 1'b0;
                         tx_state <= TX_IDLE;
@@ -210,10 +216,17 @@ module uart #(
                 end
                 default: begin
                     tx_state <= TX_IDLE;
-                    tx <= 1'b1;
+                    tx_internal <= 1'b1;
                 end
             endcase
         end
+    end
+
+    always_ff @(posedge clk or negedge reset_n) begin
+        if (!reset_n)
+            tx <= 1'b1;
+        else
+            tx <= tx_internal;
     end
 
     // H4: RX with dedicated bit timer and mid-bit sampling

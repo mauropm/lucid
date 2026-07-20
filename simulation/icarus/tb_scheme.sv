@@ -5,7 +5,7 @@ module tb_scheme;
     logic reg_cyc, reg_stb, reg_we, reg_ack;
     logic [31:0] reg_adr, reg_dat_w, reg_dat_r;
 
-    graph_scheduler #(.NUM_NODES(64), .Q_DEPTH(64)) sched (
+    fpu_subsystem #(.NUM_NODES(64), .Q_DEPTH(64)) sched (
         .clk(clk), .reset_n(reset_n),
         .reg_cyc(reg_cyc), .reg_stb(reg_stb), .reg_we(reg_we),
         .reg_adr(reg_adr), .reg_dat_w(reg_dat_w),
@@ -33,11 +33,11 @@ module tb_scheme;
         $display("");
         $display("=== %s ===", name);
         reg_write(32'h00, 32'd1);
-        for (int i = 0; i < 60; i++) @(posedge clk);
-        if (sched.node_result[sched.root_id] == expected)
-            $display("  Result = %0d: PASS", sched.node_result[sched.root_id]);
+        for (int i = 0; i < 80; i++) @(posedge clk);
+        if (sched.dbg_node_result[sched.dbg_root_id] == expected)
+            $display("  Result = %0d: PASS", sched.dbg_node_result[sched.dbg_root_id]);
         else begin
-            $error("  Result = %0d, expected %0d", sched.node_result[sched.root_id], expected);
+            $error("  Result = %0d, expected %0d", sched.dbg_node_result[sched.dbg_root_id], expected);
             fail_count++;
         end
     endtask

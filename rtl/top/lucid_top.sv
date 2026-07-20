@@ -32,16 +32,19 @@ module lucid_top (
     // H16: Reset synchronization - async assert, sync deassert
     // ============================================================
     logic reset_n;
-    logic [3:0] reset_sync;
+    (* syn_keep = "true" *) logic [3:0] reset_sync;
+    logic [7:0] por_cnt;
 
     always_ff @(posedge clk or negedge btn_rst_n) begin
         if (!btn_rst_n) begin
             reset_sync <= 4'b0000;
             reset_n    <= 1'b0;
+            por_cnt    <= '0;
         end else begin
-            // H16: Qualify with PLL lock
             reset_sync <= {reset_sync[2:0], 1'b1 & pll_lock};
-            reset_n    <= reset_sync[3];
+            if (reset_sync[3] && !reset_n && por_cnt < 8'hFF)
+                por_cnt <= por_cnt + 1'b1;
+            reset_n <= reset_sync[3] && (por_cnt >= 8'hFF);
         end
     end
 
@@ -155,7 +158,7 @@ module lucid_top (
     // ============================================================
     // UART
     // ============================================================
-    uart #(.FIFO_DEPTH(8)) uart_inst (
+    uart #(.FIFO_DEPTH(8), .CLK_FREQ_HZ(108_000_000), .DEFAULT_BAUD(115_200)) uart_inst (
         .clk(clk),
         .reset_n(reset_n),
         .wb_cyc(s2_cyc),
@@ -171,11 +174,19 @@ module lucid_top (
     );
 
     // ============================================================
-    // LEDs - C2: No hierarchical references
+    // LEDs - C2: No hierarchical references, L1: heartbeat
     // ============================================================
+    logic [26:0] heartbeat_cnt;
+    always_ff @(posedge clk or negedge reset_n) begin
+        if (!reset_n)
+            heartbeat_cnt <= '0;
+        else
+            heartbeat_cnt <= heartbeat_cnt + 1'b1;
+    end
+
     assign led[0] = reset_n;
     assign led[1] = cpu_running;
-    assign led[2] = 1'b1;
+    assign led[2] = heartbeat_cnt[26];
 
 endmodule
 

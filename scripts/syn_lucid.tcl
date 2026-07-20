@@ -5,8 +5,9 @@
 yosys -import
 
 # Read all RTL files needed for synthesis
-# Listing files explicitly to avoid SV-only constructs
+# Message types package must be read first
 set rtl_files [list \
+    rtl/messages/message_types.sv \
     rtl/bus/wishbone_bus.sv \
     rtl/cpu/rv32im_core.sv \
     rtl/cpu/boot_rom.sv \
@@ -14,7 +15,16 @@ set rtl_files [list \
     rtl/peripherals/uart.sv \
     rtl/peripherals/bram.sv \
     rtl/messages/fifo.sv \
-    rtl/scheduler/graph_scheduler.sv \
+    rtl/messages/message_router.sv \
+    rtl/messages/message_dispatcher.sv \
+    rtl/scheduler/graph_memory.sv \
+    rtl/scheduler/graph_scheduler_fp.sv \
+    rtl/primitives/primitive_exec.sv \
+    rtl/heap/heap_controller.sv \
+    rtl/heap/heap_controller_gc.sv \
+    rtl/gc/gc_controller.sv \
+    rtl/heap/closure_unit.sv \
+    rtl/heap/environment_unit.sv \
     rtl/peripherals/gowin_pll.sv \
     rtl/top/lucid_top.sv \
 ]

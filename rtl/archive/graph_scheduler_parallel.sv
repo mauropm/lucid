@@ -58,9 +58,11 @@ module graph_scheduler_parallel #(
 
     logic [NODE_ID_W-1:0] scan_cnt;
     logic [NODE_ID_W-1:0] exec_id;
-    int tmp_nid, tmp_fid;
+    logic [7:0]  tmp_nid;
+    logic [2:0]  tmp_fid;
     logic tmp_found;
-    int tmp_rnid, tmp_rfid;
+    logic [7:0]  tmp_rnid;
+    logic [2:0]  tmp_rfid;
 
     logic [4:0]  div_cnt;
     logic [31:0] div_rem, div_quo, div_divisor;

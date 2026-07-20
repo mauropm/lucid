@@ -21,8 +21,7 @@ module boot_rom (
 
     bram #(
         .ADDR_WIDTH(ADDR_WIDTH),
-        .DATA_WIDTH(32),
-        .HEX_FILE("boot_rom.hex")
+        .DATA_WIDTH(32)
     ) rom (
         .clk(clk),
         .en(wb_cyc && wb_stb),
@@ -39,6 +38,12 @@ module boot_rom (
         else
             wb_ack <= wb_cyc && wb_stb;
     end
+
+`ifdef HAVE_SVA
+    assert property (@(posedge clk) disable iff (!reset_n)
+        !(wb_cyc && wb_stb && wb_we))
+    else $warning("Boot ROM: write attempt ignored");
+`endif
 
 endmodule
 

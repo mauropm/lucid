@@ -123,8 +123,6 @@ module primitive_exec (
                         end else begin
                             state <= TX_HEADER;
                         end
-                    end else if (msg_in_valid && !msg_in_last) begin
-                        state <= RX_IDLE;
                     end
                 end
 

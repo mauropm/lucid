@@ -51,24 +51,32 @@ module graph_memory #(
     wire [ADDR_WIDTH-1:0] wb_word_addr;
     assign wb_word_addr = wb_adr[ADDR_WIDTH+1:2];
 
-    // Wishbone write
+    wire sched_active = sched_wr_en || sched_rd_en;
+
+    // Wishbone write (blocked when scheduler active)
     always_ff @(posedge clk) begin
-        if (wb_cyc && wb_stb && wb_we) begin
+        if (wb_cyc && wb_stb && wb_we && !sched_active) begin
             mem[wb_word_addr] <= wb_dat_w;
         end
     end
 
-    // Wishbone read (1-cycle)
+    // Wishbone read (1-cycle, blocked when scheduler active)
     always_ff @(posedge clk or negedge reset_n) begin
         if (!reset_n) begin
             wb_ack <= 1'b0;
         end else begin
-            wb_ack <= wb_cyc && wb_stb;
-            if (wb_cyc && wb_stb && !wb_we) begin
+            wb_ack <= wb_cyc && wb_stb && !sched_active;
+            if (wb_cyc && wb_stb && !wb_we && !sched_active) begin
                 wb_dat_r <= mem[wb_word_addr];
             end
         end
     end
+
+`ifdef HAVE_SVA
+    assert property (@(posedge clk) disable iff (!reset_n)
+        !(wb_cyc && wb_stb && sched_active))
+    else $warning("graph_memory: Wishbone access during scheduler activity");
+`endif
 
     // Scheduler port: read
     wire [ADDR_WIDTH-1:0] sched_base;

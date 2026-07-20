@@ -19,7 +19,8 @@ module rv32im_core (
     typedef enum logic [1:0] {
         STATE_FETCH,
         STATE_EXEC,
-        STATE_DIV
+        STATE_DIV,
+        STATE_MUL
     } state_t;
 
     state_t state, state_next;
@@ -192,13 +193,18 @@ module rv32im_core (
         end
     end
 
-    logic signed [63:0] mulh_ss;
-    logic signed [63:0] mulh_su;
-    logic [63:0]        mulh_uu;
+    logic [31:0] mul_a, mul_b;
+    logic [4:0]  mul_rd;
+    logic signed [63:0] mul_ss, mul_su;
+    logic [63:0]        mul_uu;
+    logic signed [63:0] mul_ss_r, mul_su_r;
+    logic [63:0]        mul_uu_r;
 
-    assign mulh_ss = $signed({{32{rs1_val[31]}}, rs1_val}) * $signed({{32{rs2_val[31]}}, rs2_val});
-    assign mulh_su = $signed({{32{rs1_val[31]}}, rs1_val}) * $signed({1'b0, rs2_val});
-    assign mulh_uu = {1'b0, rs1_val} * {1'b0, rs2_val};
+    always_comb begin
+        mul_ss = $signed({{32{mul_a[31]}}, mul_a}) * $signed({{32{mul_b[31]}}, mul_b});
+        mul_su = $signed({{32{mul_a[31]}}, mul_a}) * $signed({1'b0, mul_b});
+        mul_uu = {1'b0, mul_a} * {1'b0, mul_b};
+    end
 
     always_comb begin
         case (opcode)
@@ -249,7 +255,8 @@ module rv32im_core (
             // M1: Count every completed instruction
             if ((state == STATE_EXEC && state_next == STATE_FETCH) ||
                 (state == STATE_EXEC && (opcode == 7'b1100011 || opcode == 7'b1101111 || opcode == 7'b1100111)) ||
-                (state == STATE_DIV && state_next == STATE_FETCH)) begin
+                (state == STATE_DIV && state_next == STATE_FETCH) ||
+                (state == STATE_MUL)) begin
                 csr_instret <= csr_instret + 1'b1;
             end
             // M1: CSR writes
@@ -292,6 +299,21 @@ module rv32im_core (
         end
     end
 
+    // C4: CSR read data extracted for deterministic read/write atomicity
+    logic [31:0] csr_rd_data;
+    always_comb begin
+        csr_rd_data = '0;
+        case (instr[31:20])
+            12'hC00: csr_rd_data = csr_cycle;
+            12'hC02: csr_rd_data = csr_instret;
+            12'h340: csr_rd_data = csr_mscratch;
+            12'h305: csr_rd_data = csr_mtvec;
+            12'h341: csr_rd_data = csr_mepc;
+            12'h342: csr_rd_data = csr_mcause;
+            default: csr_rd_data = '0;
+        endcase
+    end
+
     always_comb begin
         state_next = STATE_FETCH;
         wb_cyc   = 1'b0;
@@ -322,21 +344,8 @@ module rv32im_core (
                     7'b0110011: begin // R-type
                         if (funct7 == 7'b0000001) begin
                             case (funct3)
-                                3'b000: begin // MUL
-                                    reg_wr_en   = 1'b1;
-                                    reg_wr_data = rs1_val * rs2_val;
-                                end
-                                3'b001: begin // MULH
-                                    reg_wr_en   = 1'b1;
-                                    reg_wr_data = mulh_ss[63:32];
-                                end
-                                3'b010: begin // MULHSU
-                                    reg_wr_en   = 1'b1;
-                                    reg_wr_data = mulh_su[63:32];
-                                end
-                                3'b011: begin // MULHU
-                                    reg_wr_en   = 1'b1;
-                                    reg_wr_data = mulh_uu[63:32];
+                                3'b000, 3'b001, 3'b010, 3'b011: begin // MUL, MULH, MULHSU, MULHU
+                                    state_next = STATE_MUL;
                                 end
                                 3'b100: begin // DIV
                                     if (rs2_val == 0) begin
@@ -405,7 +414,6 @@ module rv32im_core (
                         wb_stb   = 1'b1;
                         wb_we    = 1'b1;
                         wb_adr   = alu_result;
-                        wb_dat_o = st_data;
                         if (wb_ack) begin
                             state_next = STATE_FETCH;
                         end else begin
@@ -444,42 +452,7 @@ module rv32im_core (
 
                     7'b1110011: begin // CSR
                         reg_wr_en = 1'b1;
-                        case (funct3)
-                            3'b001: begin // CSRRW
-                                case (instr[31:20])
-                                    12'hC00: reg_wr_data = csr_cycle;
-                                    12'hC02: reg_wr_data = csr_instret;
-                                    12'h340: reg_wr_data = csr_mscratch;
-                                    12'h305: reg_wr_data = csr_mtvec;
-                                    12'h341: reg_wr_data = csr_mepc;
-                                    12'h342: reg_wr_data = csr_mcause;
-                                    default: reg_wr_data = '0;
-                                endcase
-                            end
-                            3'b010: begin // CSRRS
-                                case (instr[31:20])
-                                    12'hC00: reg_wr_data = csr_cycle;
-                                    12'hC02: reg_wr_data = csr_instret;
-                                    12'h340: reg_wr_data = csr_mscratch;
-                                    12'h305: reg_wr_data = csr_mtvec;
-                                    12'h341: reg_wr_data = csr_mepc;
-                                    12'h342: reg_wr_data = csr_mcause;
-                                    default: reg_wr_data = '0;
-                                endcase
-                            end
-                            3'b011: begin // CSRRC
-                                case (instr[31:20])
-                                    12'hC00: reg_wr_data = csr_cycle;
-                                    12'hC02: reg_wr_data = csr_instret;
-                                    12'h340: reg_wr_data = csr_mscratch;
-                                    12'h305: reg_wr_data = csr_mtvec;
-                                    12'h341: reg_wr_data = csr_mepc;
-                                    12'h342: reg_wr_data = csr_mcause;
-                                    default: reg_wr_data = '0;
-                                endcase
-                            end
-                            default: reg_wr_data = '0;
-                        endcase
+                        reg_wr_data = csr_rd_data;
                     end
 
                     default: begin
@@ -505,6 +478,16 @@ module rv32im_core (
                     state_next = STATE_DIV;
                 end
             end
+
+            STATE_MUL: begin
+                state_next = STATE_FETCH;
+                reg_wr_en  = 1'b1;
+                reg_wr_addr = mul_rd;
+                reg_wr_data = (funct3 == 3'b000) ? mul_uu_r[31:0] :
+                              (funct3 == 3'b001) ? mul_ss_r[63:32] :
+                              (funct3 == 3'b010) ? mul_su_r[63:32] :
+                                                   mul_uu_r[63:32];
+            end
         endcase
     end
 
@@ -515,6 +498,30 @@ module rv32im_core (
     assign div_rem_shifted = {div_rem[30:0], div_quo[31]};
     assign div_sub_result  = div_rem_shifted - div_divisor;
     assign div_sub_ok      = ~div_sub_result[31];
+
+    // H3: Multiply pipeline registers - operands registered in STATE_EXEC,
+    // products registered one cycle later in STATE_MUL
+    always_ff @(posedge clk or negedge reset_n) begin
+        if (!reset_n) begin
+            mul_a    <= '0;
+            mul_b    <= '0;
+            mul_rd   <= '0;
+            mul_ss_r <= '0;
+            mul_su_r <= '0;
+            mul_uu_r <= '0;
+        end else begin
+            if (state == STATE_EXEC && state_next == STATE_MUL) begin
+                mul_a  <= rs1_val;
+                mul_b  <= rs2_val;
+                mul_rd <= rd;
+            end
+            if (state == STATE_MUL) begin
+                mul_ss_r <= mul_ss;
+                mul_su_r <= mul_su;
+                mul_uu_r <= mul_uu;
+            end
+        end
+    end
 
     always_ff @(posedge clk or negedge reset_n) begin
         if (!reset_n) begin
@@ -598,6 +605,7 @@ module rv32im_core (
                 instr <= wb_dat_i;
             if ((state == STATE_EXEC && state_next == STATE_FETCH) ||
                 (state == STATE_EXEC && state_next == STATE_DIV) ||
+                (state == STATE_EXEC && state_next == STATE_MUL) ||
                 (state == STATE_EXEC && (opcode == 7'b1100011 || opcode == 7'b1101111 || opcode == 7'b1100111)))
                 pc <= pc_next;
         end

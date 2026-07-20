@@ -5,7 +5,7 @@ module tb_graph_scheduler;
     logic reg_cyc, reg_stb, reg_we, reg_ack;
     logic [31:0] reg_adr, reg_dat_w, reg_dat_r;
 
-    graph_scheduler #(.NUM_NODES(64), .Q_DEPTH(64)) sched (
+    graph_scheduler_fp #(.NUM_NODES(64), .Q_DEPTH(64)) sched (
         .clk(clk), .reset_n(reset_n),
         .reg_cyc(reg_cyc), .reg_stb(reg_stb), .reg_we(reg_we),
         .reg_adr(reg_adr), .reg_dat_w(reg_dat_w),
@@ -80,13 +80,13 @@ module tb_graph_scheduler;
         for (int i = 0; i < 50; i++) @(posedge clk);
 
         $display("=== Results ===");
-        if (sched.node_result[4] == 32'd14)
+        if (sched.dbg_node_result[4] == 32'd14)
             $display("  Node 4 = 14: PASS");
-        else begin $error("  Node 4 = %0d, expected 14", sched.node_result[4]); fail_count++; end
+        else begin $error("  Node 4 = %0d, expected 14", sched.dbg_node_result[4]); fail_count++; end
 
-        if (sched.node_result[3] == 32'd12)
+        if (sched.dbg_node_result[3] == 32'd12)
             $display("  Node 3 = 12: PASS");
-        else begin $error("  Node 3 = %0d, expected 12", sched.node_result[3]); fail_count++; end
+        else begin $error("  Node 3 = %0d, expected 12", sched.dbg_node_result[3]); fail_count++; end
 
         $display("");
         if (fail_count == 0) begin $display("PASS: tb_graph_scheduler"); $finish(0); end

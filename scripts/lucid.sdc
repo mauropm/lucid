@@ -33,3 +33,14 @@ set_false_path -to [get_ports {led[*]}]
 
 # Clock uncertainty
 set_clock_uncertainty 0.200 [get_clocks clk_sys]
+
+# Multi-cycle paths for division state machine (32 cycles per operation)
+set_multicycle_path 2 -setup -from [get_cells -hier *div_cnt*] -to [get_cells -hier *div_*]
+set_multicycle_path 1 -hold  -from [get_cells -hier *div_cnt*] -to [get_cells -hier *div_*]
+
+# Multi-cycle paths for UART baud tick counter
+set_multicycle_path 2 -setup -from [get_cells -hier *baud_tick_cnt*] -to [get_cells -hier *baud_tick*]
+set_multicycle_path 1 -hold  -from [get_cells -hier *baud_tick_cnt*] -to [get_cells -hier *baud_tick*]
+
+# Relax LED heartbeat counter (no timing critical path)
+set_false_path -from [get_cells -hier *heartbeat_cnt*]
